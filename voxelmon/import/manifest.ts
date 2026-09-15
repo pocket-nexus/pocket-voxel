@@ -111,6 +111,7 @@ export interface Manifest {
   growthRates: string[];
   paletteOrder: string[];
   dexOrder: string[];
+  iconOrder: string[];
   dexEntryLabels: Record<string, string>;
   pokemonAssets: Record<string, PokemonAssetSpec>;
   trainers: string[];

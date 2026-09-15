@@ -1,3 +1,4 @@
+import { partyIconsBySpecies } from "./party-icons.ts";
 // Port of gen1recomp RomExtractor.lua decodeEvolutionsAndMoves + dexEntry +
 // extractPokemon (lines 1020-1232). Pics land in gfx.bin (battle/front/*,
 // battle/back/*, plus the redb/oldmanb player back pics); the trainer-card
@@ -101,6 +102,7 @@ function dexEntry(ctx: Ctx, index: number, species: string): Record<string, unkn
 export function extractPokemon(ctx: Ctx): Record<string, unknown> {
   const { rom, manifest, gfx } = ctx;
   const speciesOrder = manifest.constants.speciesOrder;
+  const partyIcons = partyIconsBySpecies(ctx);
   const dexBySpecies: Record<string, number> = {};
   manifest.dexOrder.forEach((species, i) => {
     dexBySpecies[species] = i + 1;
@@ -170,6 +172,7 @@ export function extractPokemon(ctx: Ctx): Record<string, unknown> {
       id: species,
       index,
       dex,
+      partyIcon: partyIcons[species],
       name: decodedNames[i],
       source: `ROM:BaseStats[${dex}]`,
       types: speciesTypes,

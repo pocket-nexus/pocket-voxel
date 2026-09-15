@@ -96,6 +96,7 @@ function makeSave(party: PartyMon[], inventory: Record<string, number> = {}): Ba
 }
 
 interface BattleOpts {
+  data?: VoxelmonData;
   playerMon?: PartyMon;
   inventory?: Record<string, number>;
   species?: string;
@@ -106,10 +107,11 @@ interface BattleOpts {
 }
 
 function makeBattle(opts: BattleOpts): { b: WildBattle; input: FakeInput; save: BattleSave } {
-  const playerMon = opts.playerMon ?? newMon(data!, "SQUIRTLE", 5);
+  const battleData = opts.data ?? data!;
+  const playerMon = opts.playerMon ?? newMon(battleData, "SQUIRTLE", 5);
   const save = makeSave([playerMon], opts.inventory ?? {});
   const b = new WildBattle(
-    data!,
+    battleData,
     save,
     seqRng(...opts.rolls),
     opts.species ?? "PIDGEY",
@@ -352,6 +354,24 @@ describe("scripted wild battle", () => {
     expect(b.result).toBeNull();
     expect(b.phase).toBe("menu");
     expect(save.party.length).toBe(1);
+  });
+
+  test.skipIf(!hasGen)("a data-defined ball uses its declared capture profile", () => {
+    const customData = structuredClone(data!);
+    customData.items!.FIX_BALL = {
+      id: "FIX_BALL", index: 250, name: "FIX BALL", price: 200, ball: "MASTER_BALL",
+    };
+    const { b, input, save } = makeBattle({
+      data: customData,
+      inventory: { FIX_BALL: 1 },
+      rolls: [0, 0, 0, 0],
+    });
+    tick(b, input, ["down"]);
+    tick(b, input, ["a"]);
+    tick(b, input, ["a"]);
+    settle(b, input);
+    expect(b.finished).toBe("caught");
+    expect(save.inventory.FIX_BALL).toBeUndefined();
   });
 
   test.skipIf(!hasGen)("paralysis: the 63/256 roll blocks the move", () => {
@@ -632,8 +652,11 @@ const BATTLE_SEED = 17;
 
 async function runBattleTapeInProcess(): Promise<RecorderHost> {
   const host = new RecorderHost();
-  const game = new VoxelmonGame(data!, host, BATTLE_SEED);
+  const game = new VoxelmonGame({ ...data!, partyIcons: undefined }, host, BATTLE_SEED);
   game.newGame();
+  // This tape is a battle fixture, not the new-game story: grant its
+  // historical Squirtle explicitly now that production no longer does.
+  game.chooseStarter("SQUIRTLE");
   const tapeText = await Bun.file(join(root, "voxelmon/tapes/battle.tape")).text();
   const tape = new TapePlayer(parseTape(tapeText));
   while (!tape.done && game.tickIndex < 100_000) {
@@ -667,4 +690,69 @@ describe("battle tape", () => {
     },
     60_000,
   );
+});
+
+describe.skipIf(!hasGen)("expanded moveset effects", () => {
+  function setup(move: string, damage = 11) {
+    const { b } = makeBattle({ playerMon: newMon(data!, "ZUBAT", 20), level: 30, rolls: [0] });
+    b.player.mon.hp = 5;
+    b.accuracyRoll = () => true;
+    b.computeDamage = () => [damage, { crit: false, typeMult: 10 }];
+    return { b, use: () => b.performMove(b.player, b.enemy, { id: move, pp: 20 }, false) };
+  }
+  for (const move of ["LEECH_LIFE", "ABSORB", "MEGA_DRAIN"]) {
+    test(`${move} heals and queues the HP bar`, () => {
+      const { b, use } = setup(move);
+      let drains = 0;
+      b.drainNext = () => { drains++; };
+      use();
+      expect(b.player.mon.hp).toBe(10);
+      expect(b.lastDamage).toBe(5);
+      expect(drains).toBe(2);
+    });
+  }
+  test("drain misses, overkill and HP cap", () => {
+    const { b, use } = setup("LEECH_LIFE", 999);
+    b.accuracyRoll = () => false;
+    use();
+    expect(b.player.mon.hp).toBe(5);
+    b.accuracyRoll = () => true;
+    b.enemy.mon.hp = 1;
+    use();
+    expect(b.player.mon.hp).toBe(b.player.mon.stats.hp);
+  });
+  test("Dream Eater requires sleep", () => {
+    const { b, use } = setup("DREAM_EATER");
+    const hp = b.enemy.mon.hp;
+    use();
+    expect(b.player.mon.hp).toBe(5);
+    expect(b.enemy.mon.hp).toBe(hp);
+    b.enemy.mon.status = "SLP";
+    use();
+    expect(b.player.mon.hp).toBe(10);
+  });
+  for (const [move, status] of [["ICE_BEAM", "FRZ"], ["THUNDERBOLT", "PAR"], ["FIRE_BLAST", "BRN"], ["SLUDGE", "PSN"]]) {
+    test(`${move} applies ${status}`, () => {
+      const { b, use } = setup(move);
+      use();
+      expect(b.enemy.mon.status).toBe(status);
+    });
+  }
+  test("two-hit moves and Twineedle poison", () => {
+    for (const move of ["TWINEEDLE", "DOUBLE_KICK"]) {
+      const { b, use } = setup(move, 3);
+      const hp = b.enemy.mon.hp;
+      use();
+      expect(b.enemy.mon.hp).toBe(hp - 6);
+      expect(b.enemy.mon.status).toBe(move === "TWINEEDLE" ? "PSN" : null);
+    }
+  });
+  test("all species movesets reference valid moves and PP", () => {
+    for (const def of Object.values(data!.pokemon)) {
+      for (const id of [...def.level1Moves, ...def.learnset.map(row => row.move)]) {
+        expect(data!.moves[id]).toBeDefined();
+        expect(data!.moves[id].pp).toBeGreaterThan(0);
+      }
+    }
+  });
 });

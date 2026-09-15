@@ -1,5 +1,7 @@
 # The Quality Ladder
 
+> Revision note: the [PSP-1000 findings](../PSP1000-FINDINGS.md) document the newer streaming implementation, bounded PSP draw distances, and validation limits. Earlier measurements and fidelity claims below are historical.
+
 Pocket Voxel runs on machines an order of magnitude apart in throughput, so
 fidelity is a **ladder a machine climbs, not a build flag**. The rungs and
 their dials are pinned in `contracts/spec/voxel-spec.ts` (`QUALITY_TIER`,

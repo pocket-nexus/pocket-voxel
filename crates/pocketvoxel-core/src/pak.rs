@@ -136,6 +136,8 @@ use crate::spec::{
     VXPK_META_SIZE, VXPK_VERSION,
 };
 
+pub mod index;
+
 pub type ReadError = &'static str;
 
 /// META.emote_page value for "no emote art".
@@ -575,6 +577,20 @@ fn check_mesh_range(m: &MeshRange, verts: &[PakVert], indices: &[u16]) -> Result
 /// the vertex/index pools meet GE alignment requirements (2/4-byte alignment
 /// is verified; misaligned blobs are rejected, never mis-read).
 pub fn read(data: &[u8]) -> Result<Pak<'_>, ReadError> {
+    read_impl(data, None)
+}
+
+/// Parse a compact resident image whose CHNK/STMP payloads were omitted.
+/// Their already-validated directories and ranges come from `index`; world
+/// geometry must be supplied separately by a streaming renderer.
+pub fn read_streaming_resident<'a>(
+    data: &'a [u8],
+    index: &index::PakIndex,
+) -> Result<Pak<'a>, ReadError> {
+    read_impl(data, Some(index))
+}
+
+fn read_impl<'a>(data: &'a [u8], streamed: Option<&index::PakIndex>) -> Result<Pak<'a>, ReadError> {
     // --- container header + section table ---------------------------------
     let mut r = Rd::new(data);
     if r.u32v()? != VXPK_MAGIC {
@@ -721,7 +737,18 @@ pub fn read(data: &[u8]) -> Result<Pak<'_>, ReadError> {
 
     // --- ATLS -------------------------------------------------------------
     let mut atlases = Vec::new();
-    {
+    if let Some(index) = streamed {
+        for page in &index.atlases {
+            atlases.push(AtlasPage {
+                w: page.w,
+                h: page.h,
+                kind: page.kind,
+                frames: page.frames,
+                frame_len: page.frame_len,
+                texels: &[],
+            });
+        }
+    } else {
         let sect = payload(6);
         let (_, _, table_count) = sections[6];
         let mut r = Rd::new(sect);
@@ -771,8 +798,16 @@ pub fn read(data: &[u8]) -> Result<Pak<'_>, ReadError> {
     }
 
     // --- CHNK -------------------------------------------------------------
-    let (verts, indices, maps, chunks);
-    {
+    let (verts, indices, maps, chunks): (&[PakVert], &[u16], Vec<MapDir>, Vec<Chunk>);
+    if let Some(index) = streamed {
+        if index.meta.map_count != meta.map_count || index.meta.atlas_count != meta.atlas_count {
+            return Err("streaming index disagrees with resident META");
+        }
+        verts = &[];
+        indices = &[];
+        maps = index.maps.clone();
+        chunks = index.chunks.clone();
+    } else {
         let sect = payload(2);
         let (_, _, table_count) = sections[2];
         let mut r = Rd::new(sect);
@@ -844,7 +879,10 @@ pub fn read(data: &[u8]) -> Result<Pak<'_>, ReadError> {
 
     // --- STMP -------------------------------------------------------------
     let (stamp_maps, stamps);
-    {
+    if let Some(index) = streamed {
+        stamp_maps = index.stamp_maps.clone();
+        stamps = index.stamps.clone();
+    } else {
         let (_, _, table_count) = sections[5];
         let mut r = Rd::new(payload(5));
         let map_count = r.u16v()? as usize;

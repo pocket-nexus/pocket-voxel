@@ -117,7 +117,8 @@ test("the top rung is the identity", () => {
   // The mod's own pull is geometric — per-vertex, along each eye ray. The
   // depth-bias substitute exists only below the top.
   expect(top.pullDepthBias).toBe(0);
-  for (const rung of QUALITY) expect(rung.chunkDist).toBe(CHUNK_DRAW_DIST_PX);
+  expect(QUALITY[0].chunkDist).toBeLessThan(CHUNK_DRAW_DIST_PX);
+  for (const rung of QUALITY.slice(1)) expect(rung.chunkDist).toBe(CHUNK_DRAW_DIST_PX);
 });
 
 // The bias mode is a HOW, not a how-much: it must never appear on a rung

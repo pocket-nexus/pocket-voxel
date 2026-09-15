@@ -264,6 +264,89 @@ pub struct DrawList {
     pub items: Vec<Item>,
 }
 
+/// One exact geometry span consumed by a frame. Counts reflect all quality
+/// decisions already applied by [`build`] (including grass/flower density),
+/// so a file-backed host need not duplicate renderer policy.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GeometryRequest {
+    pub vert_base: u32,
+    pub vert_count: u16,
+    pub index_base: u32,
+    pub index_count: u16,
+}
+
+/// Bulk VXPK resources referenced by one completed draw list. Palettes and
+/// directories are deliberately absent: those are small resident metadata.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct AtlasRequest {
+    pub page: u16,
+    pub frame: u16,
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct WorkingSet {
+    pub geometry: Vec<GeometryRequest>,
+    pub atlas_pages: Vec<u16>,
+    pub atlas_frames: Vec<AtlasRequest>,
+}
+
+impl WorkingSet {
+    /// Derive requests from the authoritative draw list. This keeps map-slot,
+    /// seam, frustum, quality, battle, UI, and entity decisions in one place.
+    pub fn from_draw_list(list: &DrawList) -> Self {
+        let mut out = Self::default();
+        let mut add_page = |page: u16, frame: u16| {
+            let request = AtlasRequest { page, frame };
+            if !out.atlas_frames.contains(&request) { out.atlas_frames.push(request); }
+            if !out.atlas_pages.contains(&page) {
+                out.atlas_pages.push(page);
+            }
+        };
+        for item in &list.items {
+            match item {
+                Item::ChunkMesh { mesh, .. } | Item::StampMesh { mesh, .. } => {
+                    let request = GeometryRequest {
+                        vert_base: mesh.vert_base,
+                        vert_count: mesh.vert_count,
+                        index_base: mesh.index_base,
+                        index_count: mesh.index_count,
+                    };
+                    if !out.geometry.contains(&request) {
+                        out.geometry.push(request);
+                    }
+                    add_page(mesh.page, mesh.frame);
+                }
+                Item::Ghost { page, .. }
+                | Item::Card { page, .. }
+                | Item::UiQuad { page, .. } => add_page(*page, 0),
+                Item::SkyBands { .. }
+                | Item::ShadowDecal { .. }
+                | Item::VideoQuad { .. }
+                | Item::OverlayRect { .. } => {}
+            }
+        }
+        out.atlas_pages.sort_unstable();
+        out.atlas_frames.sort_unstable();
+        out
+    }
+}
+
+/// Build once and return both the commands and their exact file-backed bulk
+/// resource requirements. Streaming hosts should prefer this over calling
+/// [`build`] and [`working_set`] separately.
+pub fn build_with_working_set(scene: &Scene, pak: &Pak) -> (DrawList, WorkingSet) {
+    let list = build(scene, pak);
+    let set = WorkingSet::from_draw_list(&list);
+    (list, set)
+}
+
+/// Exact resources needed by the current scene. This convenience performs a
+/// normal draw-list build; latency-sensitive hosts should use
+/// [`build_with_working_set`] and retain its list for submission.
+pub fn working_set(scene: &Scene, pak: &Pak) -> WorkingSet {
+    WorkingSet::from_draw_list(&build(scene, pak))
+}
+
 /// Modulate a color's RGB by a tint's RGB (alpha kept). Integer rounding,
 /// so backends can match it exactly.
 pub fn modulate_rgb(c: u32, tint: u32) -> u32 {
@@ -352,10 +435,35 @@ fn slot0_offset(scene: &Scene) -> (i32, i32) {
     if s.shown { (s.ox, s.oy) } else { (0, 0) }
 }
 
+/// World-space centre used by the quality distance caps. During battle the
+/// camera leaves the player and frames the staged footprint, so retaining the
+/// roaming CAM origin can reject every chunk inside the battle frustum.
+fn visibility_origin(scene: &Scene) -> (f32, f32) {
+    if scene.battle.active {
+        let b = &scene.battle;
+        let (w, h) = if b.shape == spec::arena_shape::NARROW {
+            (1.0, 4.0)
+        } else {
+            (3.0, 6.0)
+        };
+        let (ox, oy) = slot0_offset(scene);
+        (
+            (b.x as f32 + w * 0.5) * CELL_PX as f32 + ox as f32,
+            (b.y as f32 + h * 0.5) * CELL_PX as f32 + oy as f32,
+        )
+    } else {
+        (
+            scene.cam_x as f32 / crate::spec::Q4 as f32,
+            scene.cam_y as f32 / crate::spec::Q4 as f32,
+        )
+    }
+}
+
 /// Build the frame's draw list. Pure: (scene, pak) → items, no host state.
 pub fn build(scene: &Scene, pak: &Pak) -> DrawList {
     let cam = camera(scene);
     let frustum = cam.frustum();
+    let (visibility_x, visibility_y) = visibility_origin(scene);
     let mut items = Vec::new();
 
     // 1. Sky.
@@ -428,8 +536,8 @@ pub fn build(scene: &Scene, pak: &Pak) -> DrawList {
                 // rung's `chunk_dist` dial now, held at 2.5 view heights on
                 // every rung — see voxel-spec.ts §quality ladder.
                 let (ccx, ccy) = (
-                    (mins.x + maxs.x) * 0.5 - scene.cam_x as f32 / crate::spec::Q4 as f32,
-                    (mins.z + maxs.z) * 0.5 - scene.cam_y as f32 / crate::spec::Q4 as f32,
+                    (mins.x + maxs.x) * 0.5 - visibility_x,
+                    (mins.z + maxs.z) * 0.5 - visibility_y,
                 );
                 let half = (maxs.x - mins.x).max(maxs.z - mins.z) * 0.5;
                 let dist2 = ccx * ccx + ccy * ccy;
@@ -619,7 +727,11 @@ pub fn build(scene: &Scene, pak: &Pak) -> DrawList {
             } else {
                 mesh_kind::TREE_BOX
             };
-            push_mesh(&mut items, v, tree, 0.0, 0.0);
+            // Battle cards need an unobstructed read. Terrain stays as the
+            // arena context, but trees are a foreground world pass there.
+            if !scene.battle.active {
+                push_mesh(&mut items, v, tree, 0.0, 0.0);
+            }
         }
         for &(slot, map_id, ox, oy) in &shown_maps {
             let page = slot_page[slot as usize];
@@ -672,7 +784,7 @@ pub fn build(scene: &Scene, pak: &Pak) -> DrawList {
         )
     };
     let card_w = CELL_PX as f32;
-    for ent in scene.ents.iter().filter(|e| e.shown) {
+    for ent in scene.ents.iter().filter(|e| e.shown && !scene.battle.active) {
         items.push(Item::ShadowDecal {
             corners: shadow_quad(ent_feet(ent), card_w),
             abgr: alpha_abgr(SHADOW_ALPHA_FIELD),
@@ -708,7 +820,7 @@ pub fn build(scene: &Scene, pak: &Pak) -> DrawList {
         let u1 = CELL_PX as f32 / (page.w as f32).max(CELL_PX as f32);
         [0.0, row * vh, u1, (row + 1.0) * vh]
     };
-    for ent in scene.ents.iter().filter(|e| e.shown) {
+    for ent in scene.ents.iter().filter(|e| e.shown && !scene.battle.active) {
         if ent.flags & ent_flag::GHOST != 0
             && let Some(page) = page_at(pak, ent.sheet)
         {
@@ -722,7 +834,7 @@ pub fn build(scene: &Scene, pak: &Pak) -> DrawList {
             });
         }
     }
-    for ent in scene.ents.iter().filter(|e| e.shown) {
+    for ent in scene.ents.iter().filter(|e| e.shown && !scene.battle.active) {
         let Some(page) = page_at(pak, ent.sheet) else {
             continue;
         };
@@ -768,22 +880,24 @@ pub fn build(scene: &Scene, pak: &Pak) -> DrawList {
     // Grass and flowers draw OVER the baked ground on their own dials (the
     // v1 bake paints terrain only — see cook/groundbake.ts); `skip_baked`
     // stays for the painted-detail bake a later rung may cook.
-    mesh_pass(
-        &mut items,
-        mesh_kind::GRASS,
-        grass_pull,
-        grass_bias,
-        dials.grass_dist,
-        false,
-    );
-    mesh_pass(
-        &mut items,
-        mesh_kind::FLOWER,
-        flower_pull,
-        flower_bias,
-        dials.flower_dist,
-        false,
-    );
+    if !scene.battle.active {
+        mesh_pass(
+            &mut items,
+            mesh_kind::GRASS,
+            grass_pull,
+            grass_bias,
+            dials.grass_dist,
+            false,
+        );
+        mesh_pass(
+            &mut items,
+            mesh_kind::FLOWER,
+            flower_pull,
+            flower_bias,
+            dials.flower_dist,
+            false,
+        );
+    }
 
     // 9. The GB UI layer.
     ui::append_ui(scene, pak, &mut items);
@@ -1068,12 +1182,59 @@ mod tests {
         );
     }
 
+    #[test]
+    fn working_set_is_the_exact_bulk_input_of_the_draw_list() {
+        let blob = pak::AlignedBlob::from_bytes(&pak::tests::tiny_pak_bytes());
+        let pak = pak::read(blob.bytes()).unwrap();
+        let (list, set) = build_with_working_set(&shown_scene(), &pak);
+        assert_eq!(set, WorkingSet::from_draw_list(&list));
+        assert!(!set.geometry.is_empty());
+        assert!(!set.atlas_pages.is_empty());
+        for item in &list.items {
+            match item {
+                Item::ChunkMesh { mesh, .. } | Item::StampMesh { mesh, .. } => {
+                    assert!(set.geometry.contains(&GeometryRequest {
+                        vert_base: mesh.vert_base,
+                        vert_count: mesh.vert_count,
+                        index_base: mesh.index_base,
+                        index_count: mesh.index_count,
+                    }));
+                    assert!(set.atlas_pages.contains(&mesh.page));
+                }
+                Item::Ghost { page, .. }
+                | Item::Card { page, .. }
+                | Item::UiQuad { page, .. } => assert!(set.atlas_pages.contains(page)),
+                _ => {}
+            }
+        }
+    }
+
+    #[test]
+    fn streaming_keeps_distinct_animation_frames_without_duplicate_geometry() {
+        let blob = pak::AlignedBlob::from_bytes(&pak::tests::tiny_pak_bytes());
+        let pak = pak::read(blob.bytes()).unwrap();
+        let mut list = build(&shown_scene(), &pak);
+        let mut item = *list.items.iter().find(|item| matches!(item, Item::ChunkMesh { .. })).unwrap();
+        let Item::ChunkMesh { ref mut mesh, .. } = item else { unreachable!() };
+        let page = mesh.page;
+        mesh.frame = 1;
+        let before = WorkingSet::from_draw_list(&list);
+        list.items.push(item);
+        list.items.push(item);
+        let after = WorkingSet::from_draw_list(&list);
+        assert_eq!(after.geometry, before.geometry);
+        assert_eq!(after.atlas_pages, before.atlas_pages);
+        assert!(after.atlas_frames.contains(&AtlasRequest { page, frame: 0 }));
+        assert!(after.atlas_frames.contains(&AtlasRequest { page, frame: 1 }));
+        assert_eq!(after.atlas_frames.iter().filter(|r| r.page == page && r.frame == 1).count(), 1);
+    }
+
     /// A two-chunk map: the chunk at the origin and one three chunks NORTH
     /// (the orbit camera stands to the south and looks -Z, so that is the
     /// direction distance is visible in), each carrying terrain + both tree
     /// levels + grass + flower. The far chunk is inside the chunk cap
-    /// (384 px < 340 + 64), so it proves the current PSP rung applies one
-    /// uniform representation throughout the visible field.
+    /// (384 px < 340 + 64) but outside the narrowed PSP-1000 cap, so it also
+    /// proves that the device tier bounds its live working set.
     fn quality_pak_bytes(tree_lod: bool) -> alloc::vec::Vec<u8> {
         use crate::pak::builder::{ChunkDef, PakBuilder};
         use crate::pak::{MeshRange, PakVert};
@@ -1269,11 +1430,11 @@ mod tests {
         let psp = kinds(spec::quality_tier::PSP);
         assert_eq!(
             count(&psp, mesh_kind::TERRAIN),
-            3,
-            "a detail dial never touches terrain — the silhouette must not move"
+            2,
+            "the PSP cap omits the far chunk to bound live memory"
         );
-        assert_eq!(count(&psp, mesh_kind::GRASS), 3, "grass is uniform in view");
-        assert_eq!(count(&psp, mesh_kind::FLOWER), 3);
+        assert_eq!(count(&psp, mesh_kind::GRASS), 2);
+        assert_eq!(count(&psp, mesh_kind::FLOWER), 2);
         // The psp rung's fine dial is OFF (`QUALITY_OFF`): every carved tree
         // in reach — the chunk underfoot included — is uniformly coarse.
         assert_eq!(
@@ -1283,8 +1444,8 @@ mod tests {
         );
         assert_eq!(
             count(&psp, mesh_kind::TREE_COARSE),
-            3,
-            "every visible ring carves at 2x2"
+            2,
+            "every PSP-visible ring carves at 2x2"
         );
         assert_eq!(
             count(&psp, mesh_kind::TREE_BOX),
@@ -1303,6 +1464,17 @@ mod tests {
             within_dist(0.0, 64.0, 0.0),
             "a zero dial still reaches the chunk underfoot"
         );
+    }
+
+    #[test]
+    fn battle_visibility_follows_the_arena_instead_of_the_roaming_camera() {
+        let mut scene = Scene::new();
+        scene.op(op::MAP_SHOW, &[0, 7, 32, -16], None);
+        scene.op(op::CAM, &[8 * Q4, 12 * Q4], None);
+        assert_eq!(visibility_origin(&scene), (8.0, 12.0));
+
+        scene.op(op::ARENA, &[7, 40, 20, spec::arena_shape::WIDE as i32, 0], None);
+        assert_eq!(visibility_origin(&scene), (696.0, 352.0));
     }
 
     /// A pak that carries only ONE tree level says so (no META flag), and
@@ -1330,7 +1502,12 @@ mod tests {
                     .filter(|i| matches!(i, Item::ChunkMesh { kind: k, .. } if *k == kind))
                     .count()
             };
-            assert_eq!(n(mesh_kind::TREE_HULL), 3, "every chunk keeps its hulls");
+            let visible_chunks = if tier == spec::quality_tier::PSP { 2 } else { 3 };
+            assert_eq!(
+                n(mesh_kind::TREE_HULL),
+                visible_chunks,
+                "every chunk admitted by this tier keeps its hulls"
+            );
             assert_eq!(n(mesh_kind::TREE_COARSE), 0, "no coarse level to draw");
             assert_eq!(n(mesh_kind::TREE_BOX), 0, "there are no boxes to draw");
         }
@@ -1365,12 +1542,12 @@ mod tests {
         }
     }
 
-    /// Every rung's chunk cap is the pre-ladder `CULL_DIST`, so the ladder
-    /// cannot quietly widen or narrow what the frustum is allowed to admit.
+    /// Vita/desktop retain the reference cap; PSP narrows it for RAM safety.
     #[test]
     fn the_chunk_cap_is_the_pre_ladder_one_at_every_rung() {
-        for dials in spec::QUALITY.iter() {
-            assert_eq!(dials.chunk_dist, 2.5 * spec::WORLD_VIEW_H as f32);
+        assert_eq!(spec::QUALITY[spec::quality_tier::PSP as usize].chunk_dist, spec::PSP_CHUNK_DRAW_DIST_PX);
+        for tier in [spec::quality_tier::VITA, spec::quality_tier::DESKTOP] {
+            assert_eq!(spec::QUALITY[tier as usize].chunk_dist, spec::CHUNK_DRAW_DIST_PX);
         }
     }
 

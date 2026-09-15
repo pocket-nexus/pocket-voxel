@@ -37,6 +37,11 @@ pocketvoxel-core = { path = "../pocketvoxel-core", default-features = false, fea
 pocketvoxel-gu = { path = "../pocketvoxel-gu" }
 
 [features]
+default = ["streaming-index"]
+# Foundation for the PSP-1000 file-backed VXPK path. This pass only exposes
+# the validated random reader/index and current-map geometry cache.
+streaming-index = []
+
 # Frame-dump build for tests/e2e/voxel-ppsspp.ts: replays the baked per-tick
 # button stream (VOXEL_CAP_INPUT) and dumps a screenshot at each story mark
 # tick (VOXEL_CAP_MARKS) to ms0:/vox_cap. Never in a normal build.

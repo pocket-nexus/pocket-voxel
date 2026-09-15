@@ -7,6 +7,10 @@
 /dist
 /.pocket-build/
 /node_modules
+/backups/
+/output/
+/save.json.edit
+/save.bak.edit
 dist/
 target/
 node_modules/

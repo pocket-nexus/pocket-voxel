@@ -51,6 +51,7 @@ export default withMermaid({
       {
         text: "Project",
         items: [
+          { text: "PSP-1000 Findings", link: "/PSP1000-FINDINGS" },
           { text: "Contributing", link: "/contributing" },
           { text: "Design Record (VOXEL.md)", link: "/VOXEL" },
         ],

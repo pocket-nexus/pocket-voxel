@@ -1,5 +1,7 @@
 # Pocket Voxel
 
+> Revision note: the [PSP-1000 findings](PSP1000-FINDINGS.md) document the newer streaming implementation, bounded PSP draw distances, and validation limits. Earlier measurements and fidelity claims below are historical.
+
 A specialized PocketJS runtime that presents a Game Boy creature-RPG as a
 voxelized 3D diorama on PSP-class hardware. The gameplay is a TypeScript port
 of the [gen1recomp](https://github.com/bryanthaboi/gen1recomp) Lua engine; the

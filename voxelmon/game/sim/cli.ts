@@ -27,7 +27,7 @@ const genDir = arg("gen") ?? "dist/voxelmon/gen";
 
 if (!tapePath || !outPath) {
   console.error(
-    "usage: bun voxelmon/game/sim/cli.ts --tape <file.tape> --out <file.vtrace> [--seed N]",
+    "usage: bun voxelmon/game/sim/cli.ts --tape <file.tape> --out <file.vtrace> [--seed N] [--legacy-encounters]",
   );
   process.exit(2);
 }
@@ -35,6 +35,9 @@ if (!tapePath || !outPath) {
 const tapeText = await Bun.file(tapePath).text();
 const commands = parseTape(tapeText);
 const data = await loadRuntimeData(genDir);
+// Archived story/battle tapes pin the original step-encounter RNG stream.
+// Production builds and visible-wild tests never set this compatibility flag.
+if (process.argv.includes("--legacy-encounters")) delete data.partyIcons;
 
 const host = new RecorderHost();
 const game = new VoxelmonGame(data, host, seed);
@@ -43,6 +46,9 @@ const game = new VoxelmonGame(data, host, seed);
 // `audiodata` op). Bun mounts no audio module, so nothing is synthesized.
 game.setAudio(await loadAudioBanks(genDir));
 game.newGame();
+// The deterministic legacy story tape predates the interactive title/Oak
+// flow and starts from its post-choice fixture explicitly.
+game.chooseStarter("SQUIRTLE");
 const tape = new TapePlayer(commands);
 
 // hard ceiling so a broken tape can never spin the process forever
@@ -65,7 +71,11 @@ try {
 }
 
 if (!tape.done) {
-  console.error(`tape did not finish within ${MAX_TICKS} ticks`);
+  console.error(
+    `tape did not finish within ${MAX_TICKS} ticks at ${game.overworld.map.id} ` +
+      `(${game.overworld.player.cellX},${game.overworld.player.cellY}) ` +
+      `[${game.stackKinds().join(",")}]`,
+  );
   process.exit(1);
 }
 

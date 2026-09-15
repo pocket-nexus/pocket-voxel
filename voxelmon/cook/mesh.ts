@@ -733,6 +733,7 @@ export interface StampOut {
 
 /** UV conversion: sheet px -> combined terrain page UV. */
 export interface UvTransform {
+  baseX: number;
   baseY: number;
   pageW: number;
   pageH: number;
@@ -753,7 +754,7 @@ function packQuads(quads: Quad[], uvt: UvTransform): PackedMesh {
       const [uPx, vPx] = q.uv ? q.uv[i] : [q.u ?? 0, q.v ?? 0];
       const shade = typeof q.shade === "number" ? q.shade : q.shade[i];
       verts.push({
-        u: uPx / uvt.pageW,
+        u: (uPx + uvt.baseX) / uvt.pageW,
         v: (vPx + uvt.baseY) / uvt.pageH,
         abgr: shadeColor(shade),
         x: Math.round(x),

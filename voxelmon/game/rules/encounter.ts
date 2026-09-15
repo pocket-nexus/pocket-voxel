@@ -10,6 +10,15 @@
 import type { EncounterDef, EncounterSlot } from "../data.ts";
 import type { Rng } from "../rng.ts";
 
+/** Handheld pacing: preserve each map's ROM weighting but make sparse areas
+ * less empty at the port's slower real-time walking speed. */
+export const ENCOUNTER_RATE_NUM = 3;
+export const ENCOUNTER_RATE_DEN = 2;
+
+export function effectiveRate(romRate: number): number {
+  return Math.min(255, Math.floor((romRate * ENCOUNTER_RATE_NUM) / ENCOUNTER_RATE_DEN));
+}
+
 /**
  * Cumulative slot thresholds out of 256 (pokered
  * engine/battle/wild_encounters.asm), via gen1recomp
@@ -34,7 +43,7 @@ export function roll(
   if (!encounterDef) return null;
   const grass = encounterDef.grass;
   if (!grass || grass.rate === 0) return null;
-  if (rng.byte() >= grass.rate) return null;
+  if (rng.byte() >= effectiveRate(grass.rate)) return null;
   const pick = rng.byte();
   const thresholds = grass.buckets ?? buckets;
   for (let i = 0; i < thresholds.length; i++) {

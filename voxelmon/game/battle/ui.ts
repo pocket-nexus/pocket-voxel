@@ -1,3 +1,4 @@
+import { isHmMove } from "./mon.ts";
 // The classic 160x144 battle screen as a retained tile-layer program:
 // gen1recomp src/battle/BattleState.lua drawClassic (:5631) / drawHUDs
 // (:5368) / drawTextArea (:5497) re-expressed as voxel ui ops (uiTile /
@@ -116,12 +117,13 @@ export class BattleUi {
     const playerHud = this.playerHudVisible(battle);
     const mode = [
       battle.phase,
+      battle.phase === "moveLearn" ? battle.learnIndex : 0,
       enemyHud ? 1 : 0,
       playerHud ? 1 : 0,
       battle.choiceOpen ? 1 : 0,
       battle.statBoxMon ? 1 : 0,
       battle.phase === "party" ? battle.save.party.length : 0,
-      battle.phase === "item" ? battle.itemList.length : 0,
+      battle.phase === "item" ? `${battle.itemList.length}:${battle.itemIndex}` : 0,
     ].join("|");
     this.chromeTextDirty = false;
     if (mode !== this.mode) {
@@ -226,12 +228,12 @@ export class BattleUi {
       this.box(host, 4, 12, 16, 6);
       host.uiTile(4, 12, BORDER_H);
       host.uiTile(10, 12, BORDER_BR);
-      battle.player.curMoves.forEach((mv, i) => {
+      battle.selectionMoves.forEach((mv, i) => {
         const def = battle.data.moves[mv.id];
         this.text(host, 6, 13 + i, def?.name ?? mv.id);
       });
       this.text(host, 1, 9, "TYPE/");
-      const sel = battle.player.curMoves[battle.moveIndex - 1];
+      const sel = battle.selectionMoves[battle.moveIndex - 1];
       const selDef = sel ? battle.data.moves[sel.id] : undefined;
       if (selDef) {
         this.text(host, 2, 10, battle.chart.displayName(selDef.type));
@@ -239,6 +241,20 @@ export class BattleUi {
         this.text(host, 5, 11, `${String(sel.pp).padStart(2)}/${String(maxPP).padStart(2)}`);
       }
       this.paintMoveCursor(host, battle);
+    } else if (battle.phase === "moveLearn" && battle.learningMove) {
+      const { mon, moveId } = battle.learningMove;
+      this.box(host, 0, 0, 20, 18);
+      this.text(host, 1, 1, (mon.nickname ?? battle.data.pokemon[mon.species].name).slice(0, 18));
+      this.text(host, 1, 3, "LEARN " + battle.data.moves[moveId].name);
+      this.text(host, 1, 5, "FORGET WHICH MOVE?");
+      mon.moves.forEach((mv, i) => {
+        this.text(host, 2, 7 + i, battle.data.moves[mv.id]?.name ?? mv.id);
+        if (isHmMove(battle.data, mv.id)) this.text(host, 17, 7 + i, "HM");
+      });
+      this.text(host, 2, 7 + mon.moves.length, "CANCEL");
+      host.uiTile(1, 7 + battle.learnIndex, ARROW_CURSOR);
+      this.text(host, 1, 14, "A:LEARN  B:CANCEL");
+      this.text(host, 1, 16, "HM MOVES ARE LOCKED");
     } else if (battle.phase === "party") {
       // v1 stand-in for the PartyMenu screen (the reference pushes a full
       // screen; ChooseNextMon :4097): name/level/HP rows + cursor
@@ -256,17 +272,22 @@ export class BattleUi {
       });
       host.uiTile(1, 1 + (battle.partyIndex ?? 0) * 2, ARROW_CURSOR);
       this.cursorCell = [1, 1 + (battle.partyIndex ?? 0) * 2];
+      if (battle.healingItem) {
+        this.text(host, 1, 14, "USE " + (battle.data.items?.[battle.healingItem]?.name ?? battle.healingItem));
+        this.text(host, 1, 16, "A:USE  B:CANCEL");
+      }
     } else if (battle.phase === "item") {
       // v1 stand-in for the battle BagMenu (balls only)
-      const list = battle.itemList;
-      this.box(host, 4, 2, 16, Math.max(4, 2 + list.length * 2));
+      const start = Math.max(0, battle.itemIndex - 5);
+      const list = battle.itemList.slice(start, start + 6);
+      this.box(host, 0, 2, 20, Math.max(4, 2 + list.length * 2));
       list.forEach((id, i) => {
         const name = battle.data.items?.[id]?.name ?? id;
-        this.text(host, 6, 3 + i * 2, name);
-        this.text(host, 15, 3 + i * 2, `x${String(battle.save.inventory[id] ?? 0).padStart(2)}`);
+        this.text(host, 2, 3 + i * 2, name);
+        this.text(host, 16, 3 + i * 2, `x${String(battle.save.inventory[id] ?? 0).padStart(2)}`);
       });
-      host.uiTile(5, 3 + battle.itemIndex * 2, ARROW_CURSOR);
-      this.cursorCell = [5, 3 + battle.itemIndex * 2];
+      host.uiTile(1, 3 + (battle.itemIndex - start) * 2, ARROW_CURSOR);
+      this.cursorCell = [1, 3 + (battle.itemIndex - start) * 2];
     }
 
     // the level-up stat window (PrintStatsBox: box (9,2) 11x10, :400-431)
@@ -445,7 +466,7 @@ export class BattleUi {
       }
       if (moved) {
         // the TYPE/PP panel follows the highlighted move (PrintMenuItem)
-        const sel = battle.player.curMoves[battle.moveIndex - 1];
+        const sel = battle.selectionMoves[battle.moveIndex - 1];
         const selDef = sel ? battle.data.moves[sel.id] : undefined;
         host.uiFill(1, 10, 9, 1, SPACE);
         host.uiFill(1, 11, 9, 1, SPACE);
@@ -458,7 +479,7 @@ export class BattleUi {
     } else if (battle.phase === "party") {
       this.moveCursor(host, [1, 1 + battle.partyIndex * 2]);
     } else if (battle.phase === "item") {
-      this.moveCursor(host, [5, 3 + battle.itemIndex * 2]);
+      this.moveCursor(host, [1, 3 + Math.min(battle.itemIndex, 5) * 2]);
     }
     if (battle.choiceOpen && battle.choiceYes !== this.choiceYes) {
       this.choiceYes = battle.choiceYes;

@@ -40,6 +40,9 @@ export interface WildBattler extends DamageBattler {
   fainted?: boolean;
   faintQueued?: boolean;
   lastMove?: string;
+  transformedSpecies?: string;
+  bideTurns?: number;
+  bideDamage?: number;
   /** Hyper Beam recharge etc. — outside the reachable v1 effect set but the
    * menu-lock checks read them (BattleState.lua:1699-1729). */
   mustRecharge?: boolean;

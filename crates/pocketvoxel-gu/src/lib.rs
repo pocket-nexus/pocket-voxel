@@ -86,6 +86,31 @@ const _: () = assert!(core::mem::size_of::<PakVert>() == VERTEX_STRIDE);
 const _: () = assert!(VERTEX_STRIDE == 16, "16B world vertex — repr(C), NOT packed");
 const _: () = assert!(core::mem::align_of::<PakVert>() == 4);
 
+/// Geometry backing used by world meshes. PSP streaming hosts can provide
+/// compact resident ranges while every other host continues using `Pak`.
+pub trait GeometrySource {
+    fn mesh<'a>(&'a self, mesh: &MeshDraw) -> Option<(&'a [PakVert], &'a [u16])>;
+}
+
+pub trait AtlasSource {
+    fn frame<'a>(&'a self, pak: &'a Pak<'a>, page: u16, frame: u16) -> Option<&'a [u8]>;
+}
+
+impl AtlasSource for Pak<'_> {
+    fn frame<'a>(&'a self, pak: &'a Pak<'a>, page: u16, frame: u16) -> Option<&'a [u8]> {
+        pak.atlases.get(page as usize).map(|atlas| atlas.frame(frame))
+    }
+}
+
+impl GeometrySource for Pak<'_> {
+    fn mesh<'a>(&'a self, mesh: &MeshDraw) -> Option<(&'a [PakVert], &'a [u16])> {
+        Some((
+            self.verts.get(mesh.vert_base as usize..mesh.vert_base as usize + mesh.vert_count as usize)?,
+            self.indices.get(mesh.index_base as usize..mesh.index_base as usize + mesh.index_count as usize)?,
+        ))
+    }
+}
+
 /// TEXTURE_16BIT | COLOR_8888 | VERTEX_16BIT | INDEX_16BIT | TRANSFORM_3D.
 /// 16-bit texture coords divide by 32768 in TRANSFORM_3D — the pak's UVs
 /// are cooked in exactly that fixed point (voxel-spec VERTEX_STRIDE).
@@ -343,6 +368,18 @@ impl Renderer {
         }
     }
 
+    /// Free transient geometry and palette storage during a forced reload.
+    ///
+    /// # Safety
+    /// The GE must be idle; the preceding display list borrows this pool.
+    pub unsafe fn release_transients(&mut self) {
+        self.pool = FramePool::new();
+        self.tinted_clut.clear();
+        self.raw_clut.clear();
+        self.bound = None;
+        self.reset_pool();
+    }
+
     /// Record one DrawList into the open display list. Draw order is the
     /// list's order — the core already ordered it (docs/VOXEL.md §3).
     ///
@@ -350,6 +387,27 @@ impl Renderer {
     /// A GE display list must be open (`sceGuStart`), and the pak blob must
     /// have been written back (`writeback`) after loading.
     pub unsafe fn render(&mut self, list: &DrawList, pak: &Pak) {
+        self.render_with_geometry(list, pak, pak);
+    }
+
+    /// Render with an alternate world-geometry backing. Textures, palettes,
+    /// and all non-geometry data still come from `pak`.
+    pub unsafe fn render_with_geometry<G: GeometrySource>(
+        &mut self,
+        list: &DrawList,
+        pak: &Pak,
+        geometry: &G,
+    ) {
+        self.render_with_assets(list, pak, geometry, pak);
+    }
+
+    pub unsafe fn render_with_assets<G: GeometrySource, A: AtlasSource>(
+        &mut self,
+        list: &DrawList,
+        pak: &Pak,
+        geometry: &G,
+        atlases: &A,
+    ) {
         self.bound = None;
         self.tinted_clut.clear();
         self.tinted_clut.resize(pak.palettes.len(), None);
@@ -398,7 +456,7 @@ impl Renderer {
                     self.sky(colors, *horizon_row);
                 }
                 Item::ChunkMesh { mesh, .. } | Item::StampMesh { mesh, .. } => {
-                    self.mesh(pak, mesh, list.cam.eye, &list.cam.vp);
+                    self.mesh(pak, geometry, atlases, mesh, list.cam.eye, &list.cam.vp);
                 }
                 Item::ShadowDecal { corners, abgr } => {
                     self.flat_quad(*corners, *abgr, list.cam.eye, 0.0);
@@ -413,6 +471,7 @@ impl Renderer {
                 } => {
                     self.ghost(
                         pak,
+                        atlases,
                         *verts,
                         *page,
                         *uv,
@@ -429,7 +488,7 @@ impl Renderer {
                     mirror,
                     pull,
                 } => {
-                    self.card(pak, *verts, *page, *uv, *mirror, *pull, list.cam.eye);
+                    self.card(pak, atlases, *verts, *page, *uv, *mirror, *pull, list.cam.eye);
                 }
                 Item::UiQuad { .. } => {
                     // Batched below: UiQuads are contiguous at the tail of
@@ -450,7 +509,7 @@ impl Renderer {
             }
         }
 
-        self.ui_batch(list, pak);
+        self.ui_batch(list, pak, atlases);
         self.remote_video_quad(list);
         self.overlay_batch(list);
 
@@ -511,28 +570,29 @@ impl Renderer {
     /// It joins the cache key because one page now draws through several
     /// CLUTs in a frame — Pallet Town and Route 1 share the terrain page and
     /// differ only in their roof colors.
-    unsafe fn bind(&mut self, pak: &Pak, page_idx: u16, frame: u16, tinted: bool, pal: u16) {
+    unsafe fn bind<A: AtlasSource>(&mut self, pak: &Pak, atlases: &A, page_idx: u16, frame: u16, tinted: bool, pal: u16) -> bool {
         let Some(page) = pak.atlases.get(page_idx as usize) else {
-            return;
+            return false;
         };
         let index = resolve_pal(pak, page_idx, page.kind, pal, self.palette) as u16;
         if self.bound == Some((page_idx, frame, tinted, index)) {
-            return;
+            return true;
         }
+        // Resolve the texels before changing any GE state. A missing streamed
+        // page must skip its draw, never inherit the preceding item's image.
+        let Some(texels) = atlases.frame(pak, page_idx, frame) else { return false; };
         let clut = self.clut_for(pak, index as usize, tinted);
         sys::sceGuClutMode(ClutPixelFormat::Psm8888, 0, 0xff, 0);
         sys::sceGuClutLoad(32, clut);
         let (w, h) = (page.w as i32, page.h as i32);
         let (pw, ph) = (po2(w), po2(h));
         sys::sceGuTexMode(TexturePixelFormat::PsmT8, 0, 0, 1); // swizzled, no mips
-        // Texels are pak-borrowed: 16-byte aligned (ATLS offsets are
-        // validated 16-aligned) and written back once at pak load.
         sys::sceGuTexImage(
             MipmapLevel::None,
             pw,
             ph,
             swizzle_stride(w as usize) as i32,
-            page.frame(frame).as_ptr() as *const c_void,
+            texels.as_ptr() as *const c_void,
         );
         // sceGuTexImage does NOT invalidate the GE texture cache: without
         // this flush the GE samples the previously bound page (emulators
@@ -541,12 +601,13 @@ impl Renderer {
         sys::sceGuTexScale(w as f32 / pw as f32, h as f32 / ph as f32);
         sys::sceGuTexOffset(0.0, 0.0);
         self.bound = Some((page_idx, frame, tinted, index));
+        true
     }
 
     /// Bind a sprite page through a one-draw CLUT that keeps only the source
     /// alpha mask and replaces every visible texel with `abgr`. The player
     /// ghost must be a silhouette, not the sprite card's transparent box.
-    unsafe fn bind_ghost(&mut self, pak: &Pak, page_idx: u16, abgr: u32) -> bool {
+    unsafe fn bind_ghost<A: AtlasSource>(&mut self, pak: &Pak, atlases: &A, page_idx: u16, abgr: u32) -> bool {
         let Some(page) = pak.atlases.get(page_idx as usize) else {
             return false;
         };
@@ -567,12 +628,13 @@ impl Renderer {
         let (w, h) = (page.w as i32, page.h as i32);
         let (pw, ph) = (po2(w), po2(h));
         sys::sceGuTexMode(TexturePixelFormat::PsmT8, 0, 0, 1);
+        let Some(texels) = atlases.frame(pak, page_idx, 0) else { return false; };
         sys::sceGuTexImage(
             MipmapLevel::None,
             pw,
             ph,
             swizzle_stride(w as usize) as i32,
-            page.frame(0).as_ptr() as *const c_void,
+            texels.as_ptr() as *const c_void,
         );
         sys::sceGuTexFlush();
         sys::sceGuTexScale(w as f32 / pw as f32, h as f32 / ph as f32);
@@ -641,7 +703,7 @@ impl Renderer {
     /// vertex; `pull_bias != 0` (the `pullDepthBias` rung) draws in place
     /// through the same biased VP the rasterizer uses (`draw::biased_vp`) —
     /// the depth trick with zero per-vertex work.
-    unsafe fn mesh(&mut self, pak: &Pak, m: &MeshDraw, eye: Vec3, vp: &Mat4) {
+    unsafe fn mesh<G: GeometrySource, A: AtlasSource>(&mut self, pak: &Pak, geometry: &G, atlases: &A, m: &MeshDraw, eye: Vec3, vp: &Mat4) {
         if m.index_count == 0 {
             return;
         }
@@ -658,7 +720,9 @@ impl Renderer {
         // order), so a single sceGuFrontFace cannot be right for all of
         // them. The honest fix is geometric: drop fully-occluded faces at
         // COOK time, where each face's neighbours are known.
-        self.bind(pak, m.page, m.frame, true, m.pal);
+        if !self.bind(pak, atlases, m.page, m.frame, true, m.pal) {
+            return;
+        }
 
         // Index source (pak indices are relative to vert_base — GE batch
         // style, validated < vert_count by the pak reader, so u16 indexing
@@ -674,8 +738,8 @@ impl Renderer {
         // effect (GE time identical to in place). The GE here is bound by
         // fetch behaviour, not by which block the bytes live in, so the
         // zero-CPU path wins on the whole frame.
-        let idx = &pak.indices[m.index_base as usize..(m.index_base as usize + m.index_count as usize)];
-        let idx_ptr = if (m.index_base as usize * 2) % 16 == 0 {
+        let Some((mesh_verts, idx)) = geometry.mesh(m) else { return; };
+        let idx_ptr = if (idx.as_ptr() as usize) % 16 == 0 {
             idx.as_ptr() as *const u8
         } else {
             self.pool.upload(as_bytes(idx))
@@ -695,7 +759,7 @@ impl Renderer {
                 sys::MatrixMode::Model,
                 &to_psp_matrix(&world_model(m.off_x, m.off_y)),
             );
-            let verts = pak.verts.as_ptr().add(m.vert_base as usize);
+            let verts = mesh_verts.as_ptr();
             sys::sceGuDrawArray(
                 GuPrimitive::Triangles,
                 WORLD_VTYPE,
@@ -715,7 +779,7 @@ impl Renderer {
             let t_pull = sys::sceKernelGetSystemTimeLow();
             let n = m.vert_count as usize;
             let dst = self.pool.alloc(n * core::mem::size_of::<PakVert>()) as *mut PakVert;
-            let src = &pak.verts[m.vert_base as usize..m.vert_base as usize + n];
+            let src = mesh_verts;
             for (i, pv) in src.iter().enumerate() {
                 let pos = pulled(
                     eye,
@@ -808,6 +872,7 @@ impl Renderer {
     unsafe fn ghost(
         &mut self,
         pak: &Pak,
+        atlases: &impl AtlasSource,
         verts: [[f32; 3]; 4],
         page: u16,
         uv: [f32; 4],
@@ -816,7 +881,7 @@ impl Renderer {
         abgr: u32,
         eye: Vec3,
     ) {
-        if !self.bind_ghost(pak, page, abgr) {
+        if !self.bind_ghost(pak, atlases, page, abgr) {
             return;
         }
         sys::sceGuEnable(GuState::DepthTest);
@@ -888,6 +953,7 @@ impl Renderer {
     unsafe fn card(
         &mut self,
         pak: &Pak,
+        atlases: &impl AtlasSource,
         verts: [[f32; 3]; 4],
         page: u16,
         uv: [f32; 4],
@@ -905,7 +971,9 @@ impl Renderer {
         sys::sceGuDisable(GuState::Blend);
         // A card carries no per-item palette: its OBJ/pic CLUT is a
         // property of the PAGE, which `bind` resolves through VCOL.
-        self.bind(pak, page, 0, true, COLOR_PAL_NONE);
+        if !self.bind(pak, atlases, page, 0, true, COLOR_PAL_NONE) {
+            return;
+        }
 
         // Two real-GE gotchas bisected on device + PPSSPPHeadless (see the
         // crate docs): textured 3D vertices must be the i16+indexed
@@ -919,7 +987,7 @@ impl Renderer {
     /// (raster.rs composites the UI layer verbatim), raw-texel UVs.
     /// The whole GB UI layer in one pass: state set once, one pooled
     /// upload, one `sceGuDrawArray` over every tile's sprite pair.
-    unsafe fn ui_batch(&mut self, list: &DrawList, pak: &Pak) {
+    unsafe fn ui_batch(&mut self, list: &DrawList, pak: &Pak, atlases: &impl AtlasSource) {
         let mut page_idx = None;
         let mut n = 0usize;
         for item in &list.items {
@@ -939,7 +1007,9 @@ impl Renderer {
         sys::sceGuEnable(GuState::Texture2D);
         sys::sceGuEnable(GuState::AlphaTest);
         sys::sceGuDisable(GuState::Blend);
-        self.bind(pak, page, 0, false, COLOR_PAL_NONE);
+        if !self.bind(pak, atlases, page, 0, false, COLOR_PAL_NONE) {
+            return;
+        }
 
         let cols = ((p.w as i32 / TILE_PX) as u16).max(1);
         let dst = self.pool.alloc(n * 2 * core::mem::size_of::<Vert2dTc>()) as *mut Vert2dTc;
@@ -1065,6 +1135,20 @@ impl Renderer {
             .iter()
             .filter(|item| matches!(item, Item::OverlayRect { .. }))
             .count();
+        self.overlay_rects(n, list.items.iter().filter_map(|item| match item {
+            Item::OverlayRect { x, y, w, h, abgr } => Some((*x, *y, *w, *h, *abgr)),
+            _ => None,
+        }));
+    }
+
+    /// Native diagnostics use compact rectangles instead of expanding the
+    /// game's large 3D Item enum for thousands of font runs every frame.
+    pub unsafe fn render_debug_overlay(&mut self, rects: &[pocketvoxel_core::scene::UiOverlayRect]) {
+        self.overlay_rects(rects.len(), rects.iter().map(|r| (r.x, r.y, r.w, r.h, r.abgr)));
+        sys::sceGuDisable(GuState::Blend);
+    }
+
+    unsafe fn overlay_rects(&mut self, n: usize, rects: impl Iterator<Item = (i32, i32, i32, i32, u32)>) {
         if n == 0 {
             return;
         }
@@ -1077,21 +1161,18 @@ impl Renderer {
         let bytes = n * 2 * core::mem::size_of::<Vert2dC>();
         let dst = self.pool.alloc(bytes) as *mut Vert2dC;
         let mut at = 0usize;
-        for item in &list.items {
-            let Item::OverlayRect { x, y, w, h, abgr } = item else {
-                continue;
-            };
+        for (x, y, w, h, abgr) in rects {
             dst.add(at).write(Vert2dC {
-                abgr: *abgr,
-                x: *x as i16,
-                y: *y as i16,
+                abgr,
+                x: x as i16,
+                y: y as i16,
                 z: 0,
                 pad: 0,
             });
             dst.add(at + 1).write(Vert2dC {
-                abgr: *abgr,
-                x: x.saturating_add(*w) as i16,
-                y: y.saturating_add(*h) as i16,
+                abgr,
+                x: x.saturating_add(w) as i16,
+                y: y.saturating_add(h) as i16,
                 z: 0,
                 pad: 0,
             });

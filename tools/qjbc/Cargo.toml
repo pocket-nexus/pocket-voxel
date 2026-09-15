@@ -1,0 +1,12 @@
+[package]
+name = "voxel-qjbc"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+# Must match crates/pocketvoxel-psp/Cargo.toml: QuickJS bytecode is private
+# and versioned, so compiling it with an arbitrary system qjsc is unsafe.
+libquickjs-sys = { git = "https://github.com/pocket-stack/quickjs-rs.git", rev = "ba5bdd0dc013518768e76cd9e05cd30ed53dd35b" }

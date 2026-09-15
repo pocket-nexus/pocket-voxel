@@ -150,6 +150,8 @@ export class GameMap {
   readonly id: string;
   readonly widthCells: number;
   readonly heightCells: number;
+  readonly removedStamps = new Set<string>();
+  private blockOverrides = new Map<number, number>();
   private walkable = new Set<number>();
   private doorTiles = new Set<number>();
   private warpTiles = new Set<number>();
@@ -181,7 +183,14 @@ export class GameMap {
     if (bx < 0 || by < 0 || bx >= this.def.width || by >= this.def.height) {
       return this.def.borderBlock;
     }
-    return this.def.blocks[by * this.def.width + bx];
+    return this.blockOverrides.get(by * this.def.width + bx) ?? this.def.blocks[by * this.def.width + bx];
+  }
+
+  cutBlock(bx: number, by: number, after: number): void {
+    this.blockOverrides.set(by * this.def.width + bx, after);
+    for (let y = by * 2; y < by * 2 + 2; y++) {
+      for (let x = bx * 2; x < bx * 2 + 2; x++) this.removedStamps.add(`${x},${y}`);
+    }
   }
 
   // Map.lua:204 tileAt — tile id at 8px tile coordinates, border-extended
@@ -245,7 +254,10 @@ export class GameMap {
   // Map.lua:261 — door or warp-activating tile
   isWarpTileCell(cx: number, cy: number): boolean {
     const t = this.cellTile(cx, cy);
-    return this.doorTiles.has(t) || this.warpTiles.has(t);
+    // Cerulean's north-facing house entrances use the rear-door tile,
+    // which is absent from the imported generic warp tile list.
+    return this.doorTiles.has(t) || this.warpTiles.has(t) ||
+      (this.id === "CERULEAN_CITY" && t === 0x5b && !!this.warpAtCell(cx, cy));
   }
 
   // Map.lua:268 (IsPlayerStandingOnWarpPadOrHole)

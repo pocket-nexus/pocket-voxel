@@ -1,5 +1,88 @@
 <h1><img src="./web/favicon.svg" width="40" height="40" alt="" align="absmiddle" /> Pocket Voxel</h1>
 
+## September 14, 2026: gameplay fixes
+
+- Level-up and evolution learning now offer replacement when all four move slots
+  are occupied. HM moves are locked; cancel keeps the existing moves. Newly
+  learned moves start with full PP.
+- Trainer battles now allow medicine. Choose ITEM, a potion, then a party member.
+  Potions also work from the overworld BAG; Potion, Super Potion, Hyper Potion,
+  Max Potion and Full Restore are supported. Successful battle use gives the
+  opponent an action. Cancel/no effect keeps the item; potions do not revive.
+- Route 5 daycare supports depositing one Pokémon, step-based experience,
+  saving/loading, and paid retrieval (¥100 plus ¥100 per level gained). Retrieval
+  offers new moves without deleting HMs. Keep a healthy Pokémon in your party.
+- The Vermilion Fan Club chairman gives a Bike Voucher; exchange it at the
+  Cerulean Bike Shop. Use BICYCLE from the BAG to toggle faster outdoor movement;
+  entering an indoor map dismounts. The walking sprite is currently reused.
+- Supersonic's confusion application, self-damage and expiry pass deterministic
+  tests. Reusing it on a confused target now says “already confused.” Its
+  imported accuracy is unchanged; the reported hardware failure has not yet
+  been reproduced in these tests.
+
+These changes require the updated EBOOT. They have not yet been verified on a
+physical PSP. The report of days without crashes below describes earlier builds.
+
+The next event chapter is mapped in [the city and Team Rocket event audit](docs/audits/city-events.md).
+It tracks Game Corner, Rocket Hideout, Pokémon Tower, Saffron and Silph Co
+dependencies, reward flags, map coverage, and acceptance checks. The event maps
+are now in the default cook set; Silph's placeholder elevator destination is
+intentionally excluded until its ROM warp table is fixed.
+
+## September 12, 2026: Pokémon Voxel progress
+
+<p align="center">
+  <img src="docs/shots/psp1000voxelproof.jpeg" width="820" alt="User-provided photo of Pokémon Voxel running on a PSP, showing a cave scene with the player and visible Pokémon." />
+</p>
+
+<p align="center"><em>PSP-1000 gameplay photo supplied by psplumberdev for this progress update. It shows the game running on the handheld; the exact build revision and frame rate were not recorded with the photo.</em></p>
+
+**September 13 hardware report:** psplumberdev reports that the PSP-1000 has
+been running for days without crashes. This is user-reported sustained hardware
+use; a complete campaign playthrough and instrumented performance measurements
+remain separate checks.
+
+**Campaign: development checkpoint through Erika, the fourth gym leader.**
+The expanded local package contains 116 maps. Work covers Cerulean, Vermilion
+and Lt. Surge, Cut, Routes 9/10, Rock Tunnel, Lavender, Routes 8/7 and the
+Underground Path into Celadon. Surge and Erika use ROM parties and award badges
+and TMs. Center/blackout exits, Underground Path exits and trainer detection
+have been corrected. This is implemented progression, not a completed full-game
+hardware playthrough.
+
+**Battles:** wild and trainer battles, catching, fainting/experience, party
+selection, trainer parties and payouts are present. Recent work expands status
+moves and TM/HM teaching and preserves the selected active party member between
+trainer opponents. Wild Pokémon are visible in the overworld, and the party
+follower has directional sprites. Battle coverage is still incomplete: unhandled
+move effects currently warn and fall back to plain damage.
+
+**PSP-1000 changes:** geometry and textures stream from storage, QuickJS bytecode
+is compiled on the PC, terrain pages are prepared during cooking, and Select
+shows live memory diagnostics. Start and map transitions refresh visible assets.
+Saves now live separately in `PSP/SAVEDATA/VOXELMON/`; see
+[save/update instructions](#psp-saves-and-updates).
+
+**What remains:**
+
+- Extend and verify the campaign beyond Erika, including the remaining gyms and
+  endgame; Saffron is outside the current documented chapter.
+- Finish unsupported move effects and broaden battle checks across status,
+  items, catching, party changes and trainer sequences.
+- Complete a documented chapter playthrough on PSP-1000, including battles,
+  dense maps, transitions and save/reload; measure sustained frame rate and
+  memory headroom. The user reports days of use without crashes.
+- Revalidate rendering/parity captures and other platform builds. Resolve the
+  external-profile fixture mismatch and generated web/trace prerequisites before
+  claiming a clean full-suite result.
+
+The September 12 publication checks recorded **165 Bun tests passing, 2 skipped,
+and 56 Rust core tests passing**. These are the prior checkpoint's results, not
+new tests run for this documentation update. See
+[engineering findings](docs/PSP1000-FINDINGS.md) for scope and known limitations.
+
+### Earlier PSP-2000 captures
+
 <p align="center">
   <img src="docs/shots/psp-pallet-town.png" width="720" alt="Pallet Town as a voxel diorama on a real PSP — carved trees, gabled roofs, an NPC and the player between the houses." />
 </p>
@@ -32,6 +115,25 @@ rungs, the battle stage, a GB UI tile layer, a bounded native-pixel colour
 overlay, and the chip synth that renders the ROM's own sound programs to PCM.
 Steady-state boundary traffic is a few ops per tick against a measured QuickJS
 budget of ~8k ops per frame.
+
+## PSP-1000 source and findings
+
+September 12 progress: campaign routes through Erika, visible wild Pokémon,
+a party follower, expanded status moves and TM/HM teaching, and live PSP memory
+diagnostics. See [the latest checkpoint](docs/PSP1000-FINDINGS.md#september-12-progress-checkpoint)
+for current checks and limitations. Build from source with your own supported ROM.
+
+The latest source checkpoint adds file-backed geometry and atlas streaming,
+host-compiled QuickJS bytecode, memory telemetry, persistent PSP saves, and
+expanded early-game progression. Read [the PSP-1000 engineering findings](docs/PSP1000-FINDINGS.md)
+for the implementation, memory tradeoffs, reproduction steps, and validation
+limits. This is a development checkpoint; the older hardware captures above
+are not evidence for this revision.
+
+The PSP now loads serialized bytecode while Vita uses the JavaScript guest
+bundle. They share gameplay source. The PSP memory settings also introduce
+distance culling and reduced detail; historical fidelity and parity claims
+below describe the earlier baseline and require revalidation for this revision.
 
 ## You bring the ROM
 
@@ -307,3 +409,16 @@ engine commit — a mainline commit, moved forward deliberately.
 ## License
 
 MIT. The ROM, and everything derived from it, stays yours and stays local.
+
+### PSP saves and updates
+
+Update only `PSP/GAME/VOXELMON/EBOOT.PBP` and `voxelmon.vxpak`.
+Player progress is stored separately in `PSP/SAVEDATA/VOXELMON/save.json`,
+with the previous save in `save.bak`. Back up that directory to keep a copy
+of your progress. These are game-managed files, not a PSP system save dialog.
+
+Upgrading from an older build: keep the old game folder's `save.json` and
+`save.bak` in place for the first launch. Load your game and use the in-game
+Save command once to write it to the new location. After that, replacing
+the game folder does not replace your progress. Update packages must never
+include player save files or overwrite `PSP/SAVEDATA`.

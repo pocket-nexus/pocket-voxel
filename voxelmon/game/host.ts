@@ -14,6 +14,8 @@ export interface VoxelHost {
    *  Null off-device (Bun loads gen/) and on a pak cooked without audio. */
   audiodata(): ArrayBuffer | null;
   stats(): ArrayBuffer | null;
+  saveLoad?(): string | null;
+  saveWrite?(json: string): boolean;
   reset(): void;
   // world
   mapShow(slot: number, mapId: number, ox: number, oy: number): void;
@@ -117,6 +119,10 @@ export class RecorderHost implements VoxelHost {
   remoteOpenCalls = 0;
   remoteTickCalls = 0;
   remoteCloseCalls = 0;
+  savedJson: string | null = null;
+
+  saveLoad(): string | null { return this.savedJson; }
+  saveWrite(json: string): boolean { this.savedJson = json; return true; }
 
   private op(code: number, ...args: number[]): void {
     this.pending.push(`o ${code}${args.length ? " " : ""}${args.join(" ")}`);

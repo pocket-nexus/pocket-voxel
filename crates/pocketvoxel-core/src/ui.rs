@@ -286,8 +286,13 @@ fn push_overlay_rect(
 /// expanded into row runs (not one quad per pixel), then every backend can
 /// consume one ordered, texture-free rectangle stream.
 pub fn append_overlay(scene: &Scene, items: &mut Vec<Item>) {
+    append_overlay_commands(&scene.ui_overlay, items);
+}
+
+/// Append native host labels without mutating the guest overlay.
+pub fn append_overlay_commands(commands: &[UiOverlayItem], items: &mut Vec<Item>) {
     let mut emitted = 0usize;
-    for command in &scene.ui_overlay {
+    for command in commands {
         if emitted >= UI_OVERLAY_RECTS_MAX {
             break;
         }

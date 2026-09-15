@@ -27,6 +27,7 @@ import * as Bag from "../voxelmon/game/rules/bag.ts";
 import * as Catching from "../voxelmon/game/rules/catching.ts";
 import * as Damage from "../voxelmon/game/rules/damage.ts";
 import * as Encounter from "../voxelmon/game/rules/encounter.ts";
+import * as Economy from "../voxelmon/game/rules/economy.ts";
 import * as Evolution from "../voxelmon/game/rules/evolution.ts";
 import * as Experience from "../voxelmon/game/rules/experience.ts";
 import * as Growth from "../voxelmon/game/rules/growth.ts";
@@ -731,6 +732,23 @@ describe("catching", () => {
     expect(Catching.attempt("POKE_BALL", target(21, 21, "SLP"), def45, seqRng(10))).toEqual([true, 3]);
   });
 
+  test("Bulbapedia Gen I status thresholds are strict: 25 for SLP/FRZ, 12 for PAR/BRN/PSN", () => {
+    const rate0 = { catchRate: 0 };
+    expect(Catching.attempt("POKE_BALL", target(30, 30, "SLP"), rate0, seqRng(24))).toEqual([true, 3]);
+    expect(Catching.attempt("POKE_BALL", target(30, 30, "FRZ"), rate0, seqRng(25, 255))[0]).toBe(false);
+    expect(Catching.attempt("POKE_BALL", target(30, 30, "PAR"), rate0, seqRng(11))).toEqual([true, 3]);
+    expect(Catching.attempt("POKE_BALL", target(30, 30, "PSN"), rate0, seqRng(12, 255))[0]).toBe(false);
+    expect(Catching.attempt("POKE_BALL", target(30, 30, "BRN"), rate0, seqRng(11))).toEqual([true, 3]);
+  });
+
+  test("Bulbapedia Gen I low-HP guarantees use Ball=12 normally and Ball=8 for Great Ball", () => {
+    // A passed first roll followed by the maximum M=255 only succeeds when
+    // the HP factor reaches its 255 cap.
+    expect(Catching.attempt("POKE_BALL", target(10, 30), def45, seqRng(0, 255))).toEqual([true, 3]);
+    expect(Catching.attempt("GREAT_BALL", target(15, 30), def45, seqRng(0, 255))).toEqual([true, 3]);
+    expect(Catching.attempt("POKE_BALL", target(30, 30), def45, seqRng(0, 255))[0]).toBe(false);
+  });
+
   test("first roll over the rate fails and wobbles from the HP factor", () => {
     // full-HP 21/21 POKE_BALL: f = floor(floor(21*255/12)/5) = 89
     // y = floor(4500/255) = 17, z = floor(89*17/255) = 5 -> 0 shakes
@@ -850,6 +868,8 @@ describe("status", () => {
   });
 
   test("leech seed drains into the opponent and shares the Toxic counter", () => {
+    expect(Status.leechSeedDamage(100)).toBe(6); // 6.25% of max HP
+    expect(Status.leechSeedDamage(100, 2)).toBe(12);
     const seeded = mk({ leechSeeded: true });
     const opp = mk();
     opp.mon.hp = 10;
@@ -892,9 +912,11 @@ describe("status", () => {
 describe("encounters", () => {
   const def = data.encounters.FIX_ROUTE;
 
-  test("the rate gate is rand(0..255) < rate", () => {
-    expect(Encounter.roll(def, fixedRng(25))).toBeNull(); // rate 25: 25 >= 25
-    expect(Encounter.roll(def, seqRng(24, 0))).toEqual({ species: "FIXMON_A", level: 3 });
+  test("the rate gate applies the 1.5x handheld pacing multiplier", () => {
+    expect(Encounter.effectiveRate(25)).toBe(37);
+    expect(Encounter.effectiveRate(255)).toBe(255);
+    expect(Encounter.roll(def, fixedRng(37))).toBeNull();
+    expect(Encounter.roll(def, seqRng(36, 0))).toEqual({ species: "FIXMON_A", level: 3 });
   });
 
   test("the 256-bucket pick maps to slots; a missing slot is no encounter", () => {
@@ -1021,8 +1043,29 @@ describe("evolution", () => {
 });
 
 // ---------------------------------------------------------------------------
-// bag (Bag.lua)
+// economy + bag
 // ---------------------------------------------------------------------------
+
+describe("economy", () => {
+  test("starts at ¥3000 and clamps the three-byte BCD money range", () => {
+    expect(Economy.STARTING_MONEY).toBe(3000);
+    expect(Economy.clampMoney(-1)).toBe(0);
+    expect(Economy.clampMoney(1_000_000)).toBe(999999);
+  });
+
+  test("trainer prize is class rate times the final party member's level", () => {
+    expect(Economy.trainerPayout({ baseMoney: 10 }, [{ level: 7 }, { level: 9 }])).toBe(90);
+    expect(Economy.trainerPayout({ baseMoney: 99 }, [{ level: 12 }, { level: 14 }])).toBe(1386);
+    expect(Economy.trainerPayout(undefined, [{ level: 14 }])).toBe(0);
+  });
+
+  test("blackout halves money and selling returns half price", () => {
+    expect(Economy.moneyAfterBlackout(3000)).toBe(1500);
+    expect(Economy.moneyAfterBlackout(3001)).toBe(1500);
+    expect(Economy.sellPrice({ price: 300 })).toBe(150);
+    expect(Economy.sellPrice({ price: 0 })).toBe(0);
+  });
+});
 
 describe("bag", () => {
   test("capacity: vanilla 20, constants.bagSize override, floored", () => {
@@ -1157,6 +1200,65 @@ describe("content_red facts (ROM-gated)", () => {
     const defs = Object.values(romData!.pokemon);
     expect(defs.length).toBe(151);
     expect(Math.max(...defs.map((d) => d.dex))).toBe(151);
+  });
+
+  test.skipIf(!hasGen)("all 151 species' level, TM/HM, and starting moves resolve", () => {
+    const defs = Object.values(romData!.pokemon);
+    expect(defs.length).toBe(151);
+    for (const def of defs) {
+      for (const move of def.level1Moves) expect(romData!.moves[move]).toBeDefined();
+      for (const move of def.tmhm) expect(romData!.moves[move]).toBeDefined();
+      for (const row of def.learnset) {
+        expect(row.level).toBeGreaterThan(0);
+        expect(row.level).toBeLessThanOrEqual(100);
+        expect(romData!.moves[row.move]).toBeDefined();
+      }
+    }
+  });
+
+  test.skipIf(!hasGen)("Bulbasaur learns Leech Seed at Red's canonical level 7", () => {
+    const def = romData!.pokemon.BULBASAUR;
+    expect(Experience.movesLearnedAt(def, 6)).toEqual([]);
+    expect(Experience.movesLearnedAt(def, 7)).toEqual(["LEECH_SEED"]);
+    expect(movesAtLevel(def, 6)).toEqual(["TACKLE", "GROWL"]);
+    expect(movesAtLevel(def, 7)).toEqual(["TACKLE", "GROWL", "LEECH_SEED"]);
+  });
+
+  test.skipIf(!hasGen)("all ROM trainer classes carry valid payout rates", () => {
+    const trainers = Object.values(romData!.trainers ?? {});
+    expect(trainers.length).toBe(47);
+    for (const trainer of trainers) {
+      expect(trainer.baseMoney).toBeGreaterThan(0);
+      expect(trainer.baseMoney).toBeLessThanOrEqual(99);
+      for (const party of trainer.parties) {
+        expect(Economy.trainerPayout(trainer, party)).toBe(
+          trainer.baseMoney * (party.at(-1)?.level ?? 0),
+        );
+      }
+    }
+    expect(Economy.trainerPayout(romData!.trainers!.OPP_BROCK, [{ level: 12 }, { level: 14 }])).toBe(1386);
+  });
+
+  test.skipIf(!hasGen)("every ROM Mart stock entry resolves to its ROM item price", () => {
+    const pointers = romData!.text_pointers as Record<
+      string,
+      Record<string, { mart?: string[] }>
+    >;
+    let marts = 0;
+    let stockRows = 0;
+    for (const map of Object.values(pointers)) {
+      for (const row of Object.values(map)) {
+        if (!row.mart) continue;
+        marts += 1;
+        for (const id of row.mart) {
+          stockRows += 1;
+          expect(romData!.items?.[id]).toBeDefined();
+          expect(romData!.items![id]!.price).toBeGreaterThan(0);
+        }
+      }
+    }
+    expect(marts).toBeGreaterThanOrEqual(10);
+    expect(stockRows).toBeGreaterThan(40);
   });
 
   test.skipIf(!hasGen)("typeCount 15 across the matchup table (facts.lua:22)", () => {

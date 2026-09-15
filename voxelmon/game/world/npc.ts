@@ -49,6 +49,8 @@ export class NPC implements Mover {
   targetY?: number;
   passable?: boolean;
   marching = false;
+  /** Scripted escorts may synchronize to the player's active walk setting. */
+  stepFrames = STEP_FRAMES;
 
   // NPC.lua:23 — object_event coordinates are already walk-grid cells
   constructor(mapId: string, objDef: MapObject, rng: Rng) {
@@ -77,7 +79,7 @@ export class NPC implements Mover {
 
   // NPC.lua:54 update — wander AI
   update(map: GameMap, entities: readonly Mover[], rng: Rng, tilePairs?: TilePairs): void {
-    const stepLen = STEP_FRAMES;
+    const stepLen = this.stepFrames;
     if (this.moving) {
       this.progress += 1;
       // NPC.lua:70 marching (NPC_CHANGE_FACING): walk cycle in place
@@ -129,7 +131,7 @@ export class NPC implements Mover {
   // NPC.lua:114
   walkPhase(): 0 | 1 {
     if (!this.moving) return 0;
-    const p = this.progress % 16;
-    return p >= 4 && p < 12 ? 1 : 0;
+    const p = this.progress % this.stepFrames;
+    return p >= this.stepFrames / 4 && p < (this.stepFrames * 3) / 4 ? 1 : 0;
   }
 }

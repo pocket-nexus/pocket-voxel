@@ -21,7 +21,7 @@ import {
   type RemotePcSource,
 } from "./ui/remote-desktop.ts";
 import { isOutdoor } from "./world/map.ts";
-import { computeNeighbors, type Overworld } from "./world/overworld.ts";
+import type { Overworld } from "./world/overworld.ts";
 import { NPC } from "./world/npc.ts";
 import type { Textbox } from "./world/textbox.ts";
 import {
@@ -95,11 +95,17 @@ export interface SceneView {
   pcDesktop(): PcDesktopSource | null;
   /** Topmost remote-PC shell, if any (host video + native overlay chrome). */
   remotePc(): RemotePcSource | null;
+  systemOverlay?(): SystemOverlaySource | null;
   /** The active battle, if any — the scene then stages the arena and hands
    * the GB tile layer to the battle ui. */
   battleView(): BattleSceneView | null;
   /** Autopilot-only profiling hook; undefined in production and in the sim. */
   prof?: Prof;
+}
+
+export interface SystemOverlaySource {
+  revision: number;
+  emit(host: VoxelHost): void;
 }
 
 interface UiRowCache {
@@ -129,6 +135,8 @@ export class Scene {
    * object (overworld.ts), so identity is the change signal, and the
    * neighbor BFS + slot keys — once ~7 ms EVERY tick — run only then. */
   private lastMap: unknown = null;
+  private cutMap: SceneView["overworld"]["map"] | null = null;
+  private cutStamps = new Set<string>();
   private mapSlots: (string | null)[] = [null, null, null, null, null];
   /** Per-slot ent-op args (6 ints each) + shown flags: the numeric mirror
    * of the old per-tick `${...}` key strings. `entSeen` is the per-tick
@@ -155,6 +163,8 @@ export class Scene {
   private pcRevision = -1;
   private remoteOwner: RemotePcSource | null = null;
   private remoteRevision = -1;
+  private systemOwner: SystemOverlaySource | null = null;
+  private systemRevision = -1;
   // battle staging deltas (docs/VOXEL.md §4 battle ops)
   private battleActive = false;
   private arenaStaged = false;
@@ -174,6 +184,7 @@ export class Scene {
     const p = view.prof;
     const t0 = p ? p.now() : 0;
     this.emitMaps(view);
+    this.emitCuts(view);
     const t1 = p ? p.now() : 0;
     this.emitCam(view);
     this.emitEnts(view);
@@ -252,8 +263,25 @@ export class Scene {
     this.battleActive = false;
   }
 
-  // world — slot 0 current, 1..4 the directly connected neighbours at their
-  // seam offsets (computeNeighbors hops=1; offsets in world px).
+  // PSP-1000 hard scenes: slot 0 is the current map and every other slot is
+  // hidden. Connections load only after the old scene has been released.
+  private emitCuts(view: SceneView): void {
+    const map = view.overworld.map;
+    if (map !== this.cutMap) {
+      if (this.cutMap) for (const key of this.cutStamps) {
+        const [x, y] = key.split(",").map(Number);
+        this.host.stamp(this.cutMap.def.index, x, y, 1);
+      }
+      this.cutStamps.clear();
+      this.cutMap = map;
+    }
+    for (const key of map.removedStamps) if (!this.cutStamps.has(key)) {
+      const [x, y] = key.split(",").map(Number);
+      this.host.stamp(map.def.index, x, y, 0);
+      this.cutStamps.add(key);
+    }
+  }
+
   private emitMaps(view: SceneView): void {
     const ow = view.overworld;
     // Everything below is a pure function of the current GameMap, and a
@@ -263,16 +291,9 @@ export class Scene {
     // object; the body re-runs and the slot keys still gate the ops.
     if (ow.map === this.lastMap) return;
     this.lastMap = ow.map;
-    const maps = view.data.maps!;
     const desired: ({ id: string; index: number; ox: number; oy: number } | null)[] = [
       { id: ow.map.id, index: ow.map.def.index, ox: 0, oy: 0 },
     ];
-    for (const n of computeNeighbors(maps, ow.map.id, 1).slice(0, 4)) {
-      // Un-cooked neighbours stay unseen: the pak has nothing to draw for
-      // them, and the crossing guard (overworld.ts) already walls them off.
-      if (view.data.cookedMaps && !view.data.cookedMaps.includes(n.id)) continue;
-      desired.push({ id: n.id, index: maps[n.id].index, ox: n.ox, oy: n.oy });
-    }
     for (let slot = 0; slot < 5; slot++) {
       const want = desired[slot] ?? null;
       const key = want ? `${want.id}@${want.ox},${want.oy}` : null;
@@ -410,9 +431,36 @@ export class Scene {
         frame,
         npc.px * Q4,
         npc.py * Q4,
-        ow.map.groundAt(npc.cellX, npc.cellY),
+        // Map objects occupy collision cells beside/inside furniture. Tile
+        // ids are reused contextually, so applying the tile's visual volume
+        // as an NPC support can put a normal 16 px card on top of a counter
+        // or wall. Gen I has no independently elevated NPC paths; keep map
+        // objects on the floor while retaining player hop/support handling.
+        0,
         flags,
       );
+    }
+    const follower = ow.follower;
+    const followerSlot = npcs.length + 1;
+    const followerPage = follower && view.data.followerSprites?.[follower.species];
+    if (follower?.active && followerPage !== undefined && followerSlot < ENTS_MAX) {
+      const x = Math.floor(follower.px / 16), y = Math.floor(follower.py / 16);
+      if (ow.map.inBounds(x, y)) this.emitSlot(followerSlot, followerPage, follower.frame,
+        Math.round(follower.px * Q4), Math.round(follower.py * Q4),
+        ow.map.groundAt(x, y), ENT_FLAG.walker | (follower.facing === "right" ? ENT_FLAG.mirror : 0));
+    }
+    // Original menu icons are separate two-frame cards. No terrain, camera,
+    // NPC placement or background state changes are needed to draw them.
+    for (let i = 0; i < ow.wild.slots.length; i++) {
+      const wild = ow.wild.slots[i];
+      const slot = npcs.length + 1 + (view.data.followerSprites ? 1 : 0) + i;
+      if (slot >= ENTS_MAX) break;
+      if (!wild.active || !ow.map.inBounds(wild.cellX, wild.cellY)) continue;
+      const page = view.data.partyIcons?.[wild.icon];
+      if (page === undefined) continue;
+      const bob = wild.icon === "BALL" || wild.icon === "HELIX" ? wild.frame : 0;
+      this.emitSlot(slot, page, wild.frame, wild.px * Q4, wild.py * Q4,
+        ow.map.groundAt(wild.cellX, wild.cellY) + bob, ENT_FLAG.walker);
     }
     for (let slot = 0; slot < ENTS_MAX; slot++) {
       if (this.entSeen[slot] === 0 && this.entShown[slot] !== 0) {
@@ -601,6 +649,21 @@ export class Scene {
   }
 
   private emitPcOverlay(view: SceneView): void {
+    const system = view.systemOverlay?.() ?? null;
+    if (system) {
+      if (system !== this.systemOwner || system.revision !== this.systemRevision) {
+        this.host.uiOverlayClear();
+        system.emit(this.host);
+        this.systemOwner = system;
+        this.systemRevision = system.revision;
+      }
+      return;
+    }
+    if (this.systemOwner) {
+      this.host.uiOverlayClear();
+      this.systemOwner = null;
+      this.systemRevision = -1;
+    }
     const remote = view.remotePc();
     if (remote) {
       this.pcOwner = null;

@@ -194,7 +194,7 @@ describe("synthetic border-ring routing", () => {
       flower: [],
       stamps: new Map(),
     };
-    const packed = packMap(geometry, { baseY: 0, pageW: 128, pageH: 128 });
+    const packed = packMap(geometry, { baseX: 0, baseY: 0, pageW: 128, pageH: 128 });
     expect(packed.chunks).toHaveLength(2);
     expect(packed.chunks.map((chunk) => [chunk.cx, chunk.cy])).toEqual([
       [0, 0],

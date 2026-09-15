@@ -128,3 +128,23 @@ export function destination(
   if (!dw) throw new Error(`warp to ${destMap}#${warpDef.destWarp} out of range`);
   return { map: destMap, x: dw.x, y: dw.y };
 }
+
+/** Resolve LAST_MAP against a physical outdoor backlink. This also works
+ * after blackouts, Fly, and traversing an Underground Path from either end:
+ * the most recently visited outdoor map is not necessarily this doorway's
+ * parent. Keep the legacy resolution only for genuinely ambiguous exits. */
+export function physicalExit(
+  data: Pick<VoxelmonData, "maps">,
+  interior: string,
+  exit: MapWarp,
+  preferred?: LastOutdoor,
+): LastOutdoor | undefined {
+  const candidates: LastOutdoor[] = [];
+  for (const map of Object.values(data.maps ?? {})) {
+    if (!(map.outdoor ?? map.tileset === "OVERWORLD")) continue;
+    const door = map.warps[exit.destWarp - 1];
+    if (door?.destMap === interior) candidates.push({ id: map.id, x: door.x, y: door.y });
+  }
+  return candidates.find(candidate => candidate.id === preferred?.id) ??
+    (candidates.length === 1 ? candidates[0] : undefined);
+}

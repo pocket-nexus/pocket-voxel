@@ -1,0 +1,50 @@
+# Move effect audit
+
+Checked imported starting and level-up move references and PP for all 151 species; battle and rules tests validate these and TM/HM references. Movesets were not changed.
+
+Added drain healing (Leech Life, Absorb, Mega Drain, Dream Eater), remaining damaging status/stat/flinch/confusion secondary handlers, Double Kick/Bonemerang two-hit handling, and Twineedle hits plus poison, using the local gen1recomp MoveEffects.lua reference.
+
+The following imported effects remain unsupported. Damaging moves fall back to plain damage; status moves fail. This is an audit of coverage, not a claim that all moves work.
+
+| Effect | Moves |
+| --- | --- |
+| PAY_DAY_EFFECT | PAY_DAY |
+| OHKO_EFFECT | GUILLOTINE, HORN_DRILL, FISSURE |
+| CHARGE_EFFECT | RAZOR_WIND, SOLARBEAM, DIG, SKULL_BASH, SKY_ATTACK |
+| ATTACK_UP2_EFFECT | SWORDS_DANCE |
+| SWITCH_AND_TELEPORT_EFFECT | WHIRLWIND, ROAR, TELEPORT |
+| FLY_EFFECT | FLY |
+| TRAPPING_EFFECT | BIND, WRAP, FIRE_SPIN, CLAMP |
+| JUMP_KICK_EFFECT | JUMP_KICK, HI_JUMP_KICK |
+| THRASH_PETAL_DANCE_EFFECT | THRASH, PETAL_DANCE |
+| SLEEP_EFFECT | SING, SLEEP_POWDER, HYPNOSIS, LOVELY_KISS, SPORE |
+| CONFUSION_EFFECT | SUPERSONIC, CONFUSE_RAY |
+| SPECIAL_DAMAGE_EFFECT | SONICBOOM, SEISMIC_TOSS, DRAGON_RAGE, NIGHT_SHADE, PSYWAVE |
+| DISABLE_EFFECT | DISABLE |
+| MIST_EFFECT | MIST |
+| HYPER_BEAM_EFFECT | HYPER_BEAM |
+| SPECIAL_UP1_EFFECT | GROWTH |
+| POISON_EFFECT | POISONPOWDER, TOXIC, POISON_GAS |
+| PARALYZE_EFFECT | STUN_SPORE, THUNDER_WAVE, GLARE |
+| ATTACK_UP1_EFFECT | MEDITATE, SHARPEN |
+| SPEED_UP2_EFFECT | AGILITY |
+| RAGE_EFFECT | RAGE |
+| MIMIC_EFFECT | MIMIC |
+| DEFENSE_DOWN2_EFFECT | SCREECH |
+| EVASION_UP1_EFFECT | DOUBLE_TEAM, MINIMIZE |
+| HEAL_EFFECT | RECOVER, SOFTBOILED, REST |
+| DEFENSE_UP2_EFFECT | BARRIER, ACID_ARMOR |
+| LIGHT_SCREEN_EFFECT | LIGHT_SCREEN |
+| HAZE_EFFECT | HAZE |
+| REFLECT_EFFECT | REFLECT |
+| BIDE_EFFECT | BIDE |
+| METRONOME_EFFECT | METRONOME |
+| MIRROR_MOVE_EFFECT | MIRROR_MOVE |
+| EXPLODE_EFFECT | SELFDESTRUCT, EXPLOSION |
+| SWIFT_EFFECT | SWIFT |
+| SPECIAL_UP2_EFFECT | AMNESIA |
+| TRANSFORM_EFFECT | TRANSFORM |
+| SPLASH_EFFECT | SPLASH |
+| CONVERSION_EFFECT | CONVERSION |
+| SUPER_FANG_EFFECT | SUPER_FANG |
+| SUBSTITUTE_EFFECT | SUBSTITUTE |

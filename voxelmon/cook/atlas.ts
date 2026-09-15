@@ -12,6 +12,7 @@
 // variants (gen1recomp TileRenderer.lua:74-92): water tile rows rotate by
 // WATER_OFFSETS per step, the flower tile cycles flower1-3.
 
+import followerDirections from "./follower-directions.json";
 import { ATLAS_KIND } from "../../contracts/spec/voxel-spec.ts";
 import { ANIM_STEPS, FLOWER_FRAMES, WATER_OFFSETS, defaultAnimatedTiles } from "./classify.ts";
 import { type Art, artOf, type GenData, PX_CLEAR, sheetKeyOf, type TilesetDef } from "./data.ts";
@@ -116,7 +117,8 @@ export interface PageDef {
 
 export interface TerrainLayout {
   page: PageDef;
-  /** sheet gfx key -> y offset of that sheet inside the combined page. */
+  /** Sheet variant -> x/y offset inside the hardware-sized combined page. */
+  baseX: Map<string, number>;
   baseY: Map<string, number>;
   /**
    * Sheet gfx keys whose texels carry RED++ group indices (`group*4+shade`)
@@ -148,38 +150,82 @@ export function buildTerrainPage(
   gen: GenData,
   tilesets: TilesetDef[],
   redpp?: Redpp | null,
+  mapId: string | null = null,
 ): TerrainLayout {
-  // distinct sheets, sorted by key for determinism
-  const sheets = [...new Set(tilesets.map(sheetKeyOf))].sort();
-  const baseY = new Map<string, number>();
-  let h = 0;
-  for (const key of sheets) {
-    const e = gen.gfx[key];
-    if (!e) throw new Error(`missing tileset sheet: ${key}`);
-    baseY.set(key, h);
-    h += e.h;
+  // Distinct sheet variants, sorted for determinism. RED++ occasionally
+  // assigns different tile-group vectors to tilesets that share one bitmap
+  // (POKECENTER/MART and GATE/FOREST_GATE). Give those variants independent
+  // vertical copies; the PSP streams the one terrain page, so this is a
+  // storage trade rather than a resident-memory allocation.
+  const bySheet = new Map<string, TilesetDef[]>();
+  for (const ts of tilesets) {
+    const key = sheetKeyOf(ts);
+    const list = bySheet.get(key) ?? [];
+    if (!list.some((row) => row.id === ts.id)) list.push(ts);
+    bySheet.set(key, list);
   }
-  const w = 128;
+  const sheets: { key: string; variant: string; ts: TilesetDef }[] = [];
+  for (const key of [...bySheet.keys()].sort()) {
+    const list = bySheet.get(key)!;
+    // Always split a shared bitmap by tileset. Keeping the plain and RED++
+    // layouts identical makes palette baking a texel-value transform only,
+    // and avoids making UVs depend on whether a color pack was supplied.
+    if (list.length > 1) {
+      for (const ts of [...list].sort((a, b) => a.id.localeCompare(b.id))) {
+        sheets.push({ key, variant: `${key}#${ts.id}`, ts });
+      }
+    } else {
+      sheets.push({ key, variant: key, ts: list[0] });
+    }
+  }
+  // PSP textures are limited to 512x512. Pack the 128px-wide sheets into
+  // columns instead of letting the combined terrain page grow vertically
+  // past that boundary (which the GE displays as repeated atlas grids).
+  const totalH = sheets.reduce((sum, sheet) => {
+    const e = gen.gfx[sheet.key];
+    if (!e) throw new Error(`missing tileset sheet: ${sheet.key}`);
+    return sum + e.h;
+  }, 0);
+  const columns = Math.max(1, Math.ceil(totalH / 512));
+  const w = columns * 128;
+  if (w > 512) throw new Error(`terrain atlas needs ${columns} columns (${w}px), over PSP limit`);
+  const heights = new Array<number>(columns).fill(0);
+  const baseX = new Map<string, number>();
+  const baseY = new Map<string, number>();
+  for (const sheet of sheets) {
+    const e = gen.gfx[sheet.key];
+    if (!e) throw new Error(`missing tileset sheet: ${sheet.key}`);
+    let column = 0;
+    for (let i = 1; i < columns; i++) if (heights[i] < heights[column]) column = i;
+    baseX.set(sheet.variant, column * 128);
+    baseY.set(sheet.variant, heights[column]);
+    heights[column] += e.h;
+  }
+  const h = Math.max(...heights);
+  if (h > 512) throw new Error(`terrain atlas column is ${h}px high, over PSP limit`);
 
   // which sheets animate (any using tileset declares water/flower cycles)
   const animated = new Map<string, TilesetDef>();
   for (const ts of tilesets) {
-    if (defaultAnimatedTiles(ts.animation).length > 0) animated.set(sheetKeyOf(ts), ts);
+    const key = sheetKeyOf(ts);
+    const variant = baseY.has(`${key}#${ts.id}`) ? `${key}#${ts.id}` : key;
+    if (defaultAnimatedTiles(ts.animation).length > 0) animated.set(variant, ts);
   }
   const frameCount = animated.size > 0 ? ANIM_STEPS : 1;
 
   const frames: Uint8Array[] = [];
   for (let step = 0; step < frameCount; step++) {
     const linear = new Uint8Array(w * h).fill(PX_CLEAR);
-    for (const key of sheets) {
-      const art = artOf(gen, key)!;
-      const y0 = baseY.get(key)!;
-      blitArt(linear, w, art, 0, y0);
-      const ts = animated.get(key);
+    for (const sheet of sheets) {
+      const art = artOf(gen, sheet.key)!;
+      const x0 = baseX.get(sheet.variant)!;
+      const y0 = baseY.get(sheet.variant)!;
+      blitArt(linear, w, art, x0, y0);
+      const ts = animated.get(sheet.variant);
       if (!ts) continue;
       const perRow = ts.tilesPerRow || 16;
       for (const spec of defaultAnimatedTiles(ts.animation)) {
-        const tx = (spec.tile % perRow) * 8;
+        const tx = (spec.tile % perRow) * 8 + x0;
         const ty = Math.floor(spec.tile / perRow) * 8 + y0;
         if (spec.kind === "hshift") {
           // rotate the tile's rows right by the step's cumulative offset
@@ -187,7 +233,7 @@ export function buildTerrainPage(
           const o = WATER_OFFSETS[step % WATER_OFFSETS.length];
           for (let yy = 0; yy < 8; yy++) {
             for (let xx = 0; xx < 8; xx++) {
-              linear[(ty + yy) * w + tx + ((xx + o) % 8)] = art.px(tx + xx, ty - y0 + yy);
+              linear[(ty + yy) * w + tx + ((xx + o) % 8)] = art.px(tx - x0 + xx, ty - y0 + yy);
             }
           }
         } else {
@@ -206,10 +252,11 @@ export function buildTerrainPage(
     frames.push(linear);
   }
 
-  const bakedSheets = bakeGroups(gen, tilesets, redpp, frames, w, baseY);
+  const bakedSheets = bakeGroups(gen, tilesets, redpp, frames, w, baseX, baseY, mapId);
 
   return {
     page: { w, h, kind: ATLAS_KIND.terrain, frames, name: "terrain" },
+    baseX,
     baseY,
     bakedSheets,
   };
@@ -231,7 +278,9 @@ function bakeGroups(
   redpp: Redpp | null | undefined,
   frames: Uint8Array[],
   w: number,
+  baseX: Map<string, number>,
   baseY: Map<string, number>,
+  mapId: string | null,
 ): Set<string> {
   const baked = new Set<string>();
   if (!redpp) return baked;
@@ -257,37 +306,31 @@ function bakeGroups(
           `(missing: ${missing.join(", ")}) — split the page or extend the pack`,
       );
     }
-    const vectors = new Set(known.map((ts) => redpp.groupVectorKey(ts.id)));
-    if (vectors.size > 1) {
-      throw new Error(
-        `RED++ color: tilesets ${known.map((t) => t.id).join(", ")} share sheet ` +
-          `${key} but resolve DIFFERENT tile groups — v1 bakes one terrain page, ` +
-          `so this sheet needs a per-tileset page copy (see cook/redpp.ts)`,
-      );
-    }
-
-    const ts = known[0];
     const e = gen.gfx[key];
     if (!e) throw new Error(`missing tileset sheet: ${key}`);
-    const y0 = baseY.get(key)!;
-    const perRow = ts.tilesPerRow || 16;
-    const cols = Math.floor(e.w / 8);
-    const rows = Math.floor(e.h / 8);
-    for (let row = 0; row < rows; row++) {
-      for (let col = 0; col < cols; col++) {
-        const tileId = row * perRow + col;
-        // The page is shared across maps, so the per-MAP exception table
-        // cannot apply here — cli.ts refuses to cook a map that needs one.
-        const group = redpp.groupOf(ts.id, null, tileId);
-        if (group === null) continue;
-        const shift = group * SHADES;
-        for (const frame of frames) {
-          for (let y = 0; y < 8; y++) {
-            const dst = (y0 + row * 8 + y) * w + col * 8;
-            for (let x = 0; x < 8; x++) {
-              const px = frame[dst + x];
-              if (px === PX_CLEAR) continue;
-              frame[dst + x] = shift + (px & 3);
+    const split = baseY.has(`${key}#${known[0].id}`);
+    const variants = split ? known : [known[0]];
+    for (const ts of variants) {
+      const variant = split ? `${key}#${ts.id}` : key;
+      const x0 = baseX.get(variant)!;
+      const y0 = baseY.get(variant)!;
+      const perRow = ts.tilesPerRow || 16;
+      const cols = Math.floor(e.w / 8);
+      const rows = Math.floor(e.h / 8);
+      for (let row = 0; row < rows; row++) {
+        for (let col = 0; col < cols; col++) {
+          const tileId = row * perRow + col;
+          const group = redpp.groupOf(ts.id, mapId, tileId);
+          if (group === null) continue;
+          const shift = group * SHADES;
+          for (const frame of frames) {
+            for (let y = 0; y < 8; y++) {
+              const dst = (y0 + row * 8 + y) * w + x0 + col * 8;
+              for (let x = 0; x < 8; x++) {
+                const px = frame[dst + x];
+                if (px === PX_CLEAR) continue;
+                frame[dst + x] = shift + (px & 3);
+              }
             }
           }
         }
@@ -314,6 +357,30 @@ export function buildSpritePage(gen: GenData, key: string): PageDef {
   for (let y = 0; y < art.h; y++)
     for (let x = 0; x < art.w; x++) linear[y * w + x] = art.px(x, y);
   return { w, h: art.h, kind: ATLAS_KIND.sprites, frames: [linear], name: key };
+}
+
+/** Shared party-icon companions. Keep both original front poses verbatim;
+ * original walk sheets supply directions where available. */
+export function buildFollowerPage(gen: GenData, icon: string): PageDef {
+  const front = artOf(gen, `icons/party_${icon}`);
+  if (!front) throw new Error(`missing party icon: ${icon}`);
+  const originals: Record<string, string> = { MON: "monster", FAIRY: "fairy", BIRD: "bird", WATER: "seel" };
+  const original = originals[icon] && artOf(gen, `sprites/${originals[icon]}`);
+  const directions = (followerDirections as Record<string, string[][]>)[icon];
+  const pixels = new Uint8Array(SPRITE_PAGE_W * 96).fill(PX_CLEAR);
+  for (let frame = 0; frame < 6; frame++) for (let y = 0; y < 16; y++) for (let x = 0; x < 16; x++) {
+    let value: number;
+    if (frame === 0 || frame === 3) value = front.px(x, y + (frame === 3 ? 16 : 0));
+    else if (original) value = original.px(x, frame * 16 + y);
+    else {
+      const row = frame === 1 ? 0 : frame === 2 ? 1 : frame === 4 ? 2 : 3;
+      const shade = directions?.[row]?.[y]?.[x];
+      if (shade === undefined) throw new Error(`missing ${icon} direction ${frame}`);
+      value = shade === "." ? PX_CLEAR : Number(shade);
+    }
+    pixels[(frame * 16 + y) * SPRITE_PAGE_W + x] = value;
+  }
+  return { w: SPRITE_PAGE_W, h: 96, kind: ATLAS_KIND.sprites, frames: [pixels], name: `follower/${icon}` };
 }
 
 /** The emote page: gen's 48x16 horizontal strip restacked 16x48 vertical

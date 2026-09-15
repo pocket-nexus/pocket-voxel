@@ -16,6 +16,12 @@ export interface MoveSlot {
   ppUps?: number;
 }
 
+/** HM protection applies to both level-up learning and machine teaching. */
+export function isHmMove(data: VoxelmonData, id: string): boolean {
+  return ["CUT", "FLY", "SURF", "STRENGTH", "FLASH"].includes(id) ||
+    Object.values(data.items ?? {}).some(item => item.machine?.kind === "HM" && item.machine.move === id);
+}
+
 /** The party_struct slice the battle port reads/writes (Pokemon.lua:70-88). */
 export interface PartyMon {
   species: string;

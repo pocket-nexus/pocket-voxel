@@ -101,7 +101,9 @@ async function run(
 
 /** import (only when gen/ is absent) + cook + a headless run per tape. */
 async function preparePakAndTrace(): Promise<number> {
-  if (!(await Bun.file(`${ROOT}dist/voxelmon/gen/maps.json`).exists())) {
+  const gfxFile = Bun.file(`${ROOT}dist/voxelmon/gen/gfx.json`);
+  const hasIcons = await gfxFile.exists() && (await gfxFile.json())["icons/party_MON"];
+  if (!(await Bun.file(`${ROOT}dist/voxelmon/gen/maps.json`).exists()) || !hasIcons) {
     const rc = await run(["bun", "tools/voxel.ts", "import"]);
     if (rc !== 0) return rc;
   }
@@ -113,6 +115,7 @@ async function preparePakAndTrace(): Promise<number> {
     const rc = await run([
       "bun",
       "voxelmon/game/sim/cli.ts",
+      "--legacy-encounters",
       "--tape",
       `voxelmon/tapes/${tape}.tape`,
       "--out",
@@ -156,6 +159,7 @@ async function rasterize(tape: string, tier: string, extra: string[]): Promise<n
 }
 
 const GAME_JS = "dist/voxelmon/game.js";
+const GAME_QJBC = "dist/voxelmon/game.qjbc";
 const EBOOT_DIR = "crates/pocketvoxel-psp";
 
 /** Bundle the QuickJS guest (voxelmon/game/psp-main.ts). iife/browser:
@@ -171,6 +175,24 @@ async function bundleGuest(): Promise<number> {
     "--target=browser",
     "--minify-syntax",
   ]);
+}
+
+/** Compile the bundle with the exact QuickJS revision used by the PSP host. */
+async function compileGuestBytecode(): Promise<number> {
+  return await run(
+    [
+      "cargo",
+      "run",
+      "--quiet",
+      "--release",
+      "--manifest-path",
+      "tools/qjbc/Cargo.toml",
+      "--",
+      GAME_JS,
+      GAME_QJBC,
+    ],
+    ROOT,
+  );
 }
 
 /**
@@ -222,6 +244,7 @@ async function buildEboot(cargoArgs: string[]): Promise<number> {
     TARGET_CFLAGS:
       `-target mipsel-sony-psp -mcpu=mips2 -msingle-float -mlittle-endian -mno-abicalls ` +
       `-fno-pic -G0 -mno-check-zero-division -fno-stack-protector ` +
+      `-D__GLIBC_USE(x)=0 ` +
       `-I${sdk}/psp/include -I${sdk}/psp/sdk/include ${cPathRemap}`,
     AR_mipsel_sony_psp: `${llvm}/llvm-ar`,
     RANLIB_mipsel_sony_psp: `${llvm}/llvm-ranlib`,
@@ -229,8 +252,8 @@ async function buildEboot(cargoArgs: string[]): Promise<number> {
     RUST_PSP_ABORT_ONLY: "1",
     // opt-level 0 is unusably slow on a 333 MHz console, even in dev.
     CARGO_PROFILE_DEV_OPT_LEVEL: process.env.CARGO_PROFILE_DEV_OPT_LEVEL ?? "3",
-    // The bundled guest, baked by pocketvoxel-psp/build.rs.
-    VOXELMON_JS: `${ROOT}${GAME_JS}`,
+    // The PC-compiled guest bytecode, baked by pocketvoxel-psp/build.rs.
+    VOXELMON_QJBC: `${ROOT}${GAME_QJBC}`,
     // Capture-build inputs (read under --features capture; set
     // unconditionally so a stale value cannot linger in the fingerprint).
     VOXEL_CAP_INPUT: process.env.VOXEL_CAP_INPUT ?? "",
@@ -649,6 +672,8 @@ async function main(): Promise<number> {
     if (prep !== 0) return prep;
     const bundle = await bundleGuest();
     if (bundle !== 0) return bundle;
+    const bytecode = await compileGuestBytecode();
+    if (bytecode !== 0) return bytecode;
     const built = await buildEboot(cargoArgs);
     if (built !== 0) return built;
     if (command === "run") {

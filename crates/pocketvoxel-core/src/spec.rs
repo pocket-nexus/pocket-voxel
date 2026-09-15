@@ -91,8 +91,11 @@ pub const QUALITY_UNBOUNDED: f32 = 1000000000.0;
 /// `draw::within_dist` (a 0 dial still admits the chunk underfoot via
 /// the half-extent widening; off needs its own value).
 pub const QUALITY_OFF: f32 = -1.0;
-/// The chunk distance cap: 2.5 view-heights, held at every rung.
+/// Reference chunk distance cap: 2.5 view-heights.
 pub const CHUNK_DRAW_DIST_PX: f32 = 340.0;
+/// PSP-1000 live-radius caps for constrained outdoor working sets.
+pub const PSP_CHUNK_DRAW_DIST_PX: f32 = 256.0;
+pub const PSP_DETAIL_DRAW_DIST_PX: f32 = 192.0;
 
 /// One rung's dials. Distances are world px, measured from the view
 /// centre to a chunk's own centre — all through `draw::within_dist`.
@@ -127,13 +130,13 @@ pub struct QualityDials {
 pub const QUALITY: [QualityDials; 3] = [
     // psp
     QualityDials {
-        grass_dist: 1000000000.0,
-        flower_dist: 1000000000.0,
+        grass_dist: 192.0,
+        flower_dist: 192.0,
         tree_hull_dist: -1.0,
         tree_coarse_dist: 1000000000.0,
-        chunk_dist: 340.0,
+        chunk_dist: 256.0,
         ground_bake_dist: -1.0,
-        detail_density: 4,
+        detail_density: 8,
         pull_depth_bias: true,
     },
     // vita
@@ -249,22 +252,22 @@ pub const CLEAR_OFFMAP_H: f32 = 32.0;
 
 /// The solved long-lens rig (offsets in world px from the arena midpoint).
 pub mod rig_tele {
-    pub const SIDE: f32 = 78.79;
-    pub const BACK: f32 = 144.96;
-    pub const HEIGHT: f32 = 37.88;
+    pub const SIDE: f32 = 62.0;
+    pub const BACK: f32 = 112.0;
+    pub const HEIGHT: f32 = 70.0;
     pub const LOOK_X: f32 = -0.26;
     pub const LOOK_Y: f32 = 0.34;
-    pub const FRAME_H: f32 = 34.11;
+    pub const FRAME_H: f32 = 46.0;
 }
 
 /// The solved wide rig, for rooms the long lens cannot stand back from.
 pub mod rig_wide {
-    pub const SIDE: f32 = 41.98;
-    pub const BACK: f32 = 41.16;
-    pub const HEIGHT: f32 = 28.48;
+    pub const SIDE: f32 = 34.0;
+    pub const BACK: f32 = 38.0;
+    pub const HEIGHT: f32 = 48.0;
     pub const LOOK_X: f32 = -3.24;
     pub const LOOK_Y: f32 = -1.35;
-    pub const FRAME_H: f32 = 55.62;
+    pub const FRAME_H: f32 = 58.0;
 }
 
 pub const RIG_PAN_YAW_DEG: f32 = 2.0;

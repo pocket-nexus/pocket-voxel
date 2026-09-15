@@ -15,6 +15,7 @@
 
 import { fromObject } from "./data.ts";
 import { VoxelmonGame } from "./game.ts";
+import { createPspFrame } from "./psp-frame.ts";
 import type { VoxelHost } from "./host.ts";
 
 /** The story seed — voxelmon/tapes/story.tape is plotted against it
@@ -23,9 +24,12 @@ const SEED = 17;
 
 /** The native surface pocketvoxel-psp registers before evaling this file. */
 interface VoxelNative {
+  bootLog(checkpoint: number): void;
   gamedata(): string;
   audiodata(): ArrayBuffer | undefined;
   stats(): void;
+  saveLoad?(): string | undefined;
+  saveWrite?(json: string): boolean;
   reset(): void;
   mapShow(slot: number, mapId: number, ox: number, oy: number): void;
   mapHide(slot: number): void;
@@ -89,6 +93,12 @@ const native = (globalThis as unknown as { voxel: VoxelNative }).voxel;
  * `frame(buttons)` returns (one guest turn per host tick).
  */
 class QuickJsHost implements VoxelHost {
+  saveLoad(): string | null {
+    return native.saveLoad?.() ?? null;
+  }
+  saveWrite(json: string): boolean {
+    return native.saveWrite?.(json) ?? false;
+  }
   gamedata(): ArrayBuffer | null {
     // The boot path below reads the GAME string directly; the game never
     // crosses for data again after construction.
@@ -235,8 +245,10 @@ class QuickJsHost implements VoxelHost {
 
 // ---- boot: one cold parse, then the guest owns the game ----
 const host = new QuickJsHost();
-const source = JSON.parse(native.gamedata()) as Record<string, unknown>;
-const game = new VoxelmonGame(fromObject(source), host, SEED);
+const gameJson = native.gamedata();
+const source = JSON.parse(gameJson) as Record<string, unknown>;
+const data = fromObject(source);
+const game = new VoxelmonGame(data, host, SEED);
 // AUDIO ON. This loads the pak's AUDI manifest, which is what lets the
 // director resolve a song name to (bank, address, engine) and emit the audio
 // ops; the ROM's channel programs stay in the pak and the chip synth that
@@ -256,8 +268,17 @@ const game = new VoxelmonGame(fromObject(source), host, SEED);
 // end to end — no manifest, so no audio op, so the EBOOT never opens a
 // hardware stream (main.rs gates the pump on the first op). The `audiodata`
 // op fires either way, so the op stream still matches the recorded .vtrace.
-game.setAudioFromPak();
-game.newGame();
+// TODO(PSP-1000 audio): retain the constructor's silent AudioDirector and
+// never cross into native audiodata()/manifest parsing. Restore audio only
+// after the file-backed graphics path leaves measured RAM headroom.
+game.boot();
+
+// Native calls this only after JS_EvalFunction has returned and the small
+// resident AUDI section is mounted. Deferring the manifest parse preserves
+// the PSP-1000's low-water mark during bytecode evaluation.
+(globalThis as unknown as { enableAudio: () => void }).enableAudio = (): void => {
+  game.enableDeviceAudio();
+};
 
 // Autopilot-only guest profiling: the perf-runbook EBOOT alone registers
 // `voxel.now`/`voxel.perf`; everywhere else the hook stays undefined and
@@ -276,8 +297,11 @@ if (nat.now && nat.perf) {
   };
 }
 
-(globalThis as unknown as { frame: (buttons: number) => void }).frame = (
-  buttons: number,
-): void => {
-  game.tick(buttons);
+(globalThis as unknown as { frame: (buttons: number) => number }).frame = createPspFrame(game);
+
+// Read only on demand by the native Select debug panel.
+(globalThis as unknown as { debugWorld: () => string }).debugWorld = () => {
+  let count = 0;
+  for (const wild of game.overworld.wild.slots) if (wild.active) count++;
+  return `${game.overworld.map.id} | POKEMON ${count}`;
 };

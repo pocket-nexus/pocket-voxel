@@ -11,10 +11,21 @@
 
 use core::ffi::c_void;
 
+use alloc::{vec, vec::Vec};
 use libquickjs_sys::*;
 use pocketjs_psp::ffi::{add_fn, arg_i32};
 use pocketvoxel_core::scene::Scene;
 use pocketvoxel_core::spec::op;
+use psp::sys::{self, IoOpenFlags, IoWhence};
+
+// Keep player progress outside the replaceable game installation.
+const SAVE_DIR: &[u8] = b"ms0:/PSP/SAVEDATA/VOXELMON\0";
+const SAVE_PATH: &[u8] = b"ms0:/PSP/SAVEDATA/VOXELMON/save.json\0";
+const SAVE_TMP_PATH: &[u8] = b"ms0:/PSP/SAVEDATA/VOXELMON/save.tmp\0";
+const SAVE_BAK_PATH: &[u8] = b"ms0:/PSP/SAVEDATA/VOXELMON/save.bak\0";
+const LEGACY_SAVE_PATH: &[u8] = b"ms0:/PSP/GAME/VOXELMON/save.json\0";
+const LEGACY_SAVE_BAK_PATH: &[u8] = b"ms0:/PSP/GAME/VOXELMON/save.bak\0";
+const SAVE_MAX: usize = 128 * 1024;
 
 // Symbols the vendored libquickjs-sys omits (provided by the linked QuickJS
 // C library — the established local-extern pattern, strike.rs / hosts/psp
@@ -57,12 +68,25 @@ pub unsafe fn init(game: &'static [u8]) {
     GAME = game;
 }
 
+/// GAME is a cold-boot transport only. Once the guest has parsed it into
+/// runtime objects, sever the native borrow before its backing box is freed.
+pub unsafe fn release_game() {
+    GAME = &[];
+}
+
 /// Hand the pak's AUDI section to the `audiodata` op. Call next to [`init`],
 /// with `pak.audio`; skipping it leaves the game silent but otherwise intact.
 ///
 /// # Safety
 /// Same as [`init`]: once, on the worker thread, before `register`.
 pub unsafe fn set_audio(audio: &'static [u8]) {
+    AUDIO = audio;
+}
+
+/// Replace the temporary startup GAME/AUDIO slices after the full resident
+/// pak is loaded. The retained scene is intentionally left unchanged.
+pub unsafe fn init_data(game: &'static [u8], audio: &'static [u8]) {
+    GAME = game;
     AUDIO = audio;
 }
 
@@ -251,6 +275,85 @@ unsafe extern "C" fn js_stats(
     JS_UNDEFINED
 }
 
+/// Numbered checkpoints emitted by the guest's one-shot startup path.
+unsafe extern "C" fn js_boot_log(
+    ctx: *mut JSContext,
+    _this: JSValue,
+    argc: i32,
+    argv: *mut JSValue,
+) -> JSValue {
+    psp::dprintln!("[voxelmon] js startup checkpoint {}", arg_i32(ctx, argc, argv, 0));
+    JS_UNDEFINED
+}
+
+/// Read the bounded, versioned guest save. Undefined means no usable file;
+/// parsing and schema validation remain guest-side where the data lives.
+unsafe extern "C" fn js_save_load(
+    ctx: *mut JSContext,
+    _this: JSValue,
+    _argc: i32,
+    _argv: *mut JSValue,
+) -> JSValue {
+    unsafe fn read(path: &[u8]) -> Option<Vec<u8>> {
+        let fd = sys::sceIoOpen(path.as_ptr(), IoOpenFlags::RD_ONLY, 0o777);
+        if fd.0 < 0 { return None; }
+        let len = sys::sceIoLseek(fd, 0, IoWhence::End);
+        if len <= 0 || len as usize > SAVE_MAX || sys::sceIoLseek(fd, 0, IoWhence::Set) != 0 {
+            sys::sceIoClose(fd);
+            return None;
+        }
+        let mut bytes = vec![0u8; len as usize];
+        let got = sys::sceIoRead(fd, bytes.as_mut_ptr() as *mut c_void, bytes.len() as u32);
+        sys::sceIoClose(fd);
+        if got == len as i32 { Some(bytes) } else { None }
+    }
+    // Prefer the new location. Preserve old files; the next successful in-game
+    // save migrates progress without risking deletion during an upgrade.
+    let Some(bytes) = read(SAVE_PATH)
+        .or_else(|| read(SAVE_BAK_PATH))
+        .or_else(|| read(LEGACY_SAVE_PATH))
+        .or_else(|| read(LEGACY_SAVE_BAK_PATH))
+    else { return JS_UNDEFINED; };
+    JS_NewStringLen(ctx, bytes.as_ptr(), bytes.len())
+}
+
+/// Replace the save in one complete bounded write. Returns false on any
+/// conversion/open/short-write failure so gameplay can report it later.
+unsafe extern "C" fn js_save_write(
+    ctx: *mut JSContext,
+    _this: JSValue,
+    argc: i32,
+    argv: *mut JSValue,
+) -> JSValue {
+    if argc < 1 { return JS_NewBool(ctx, false); }
+    let mut len: size_t = 0;
+    let s = JS_ToCStringLen2(ctx, &mut len, *argv, 0);
+    if s.is_null() || len == 0 || len > SAVE_MAX {
+        if !s.is_null() { JS_FreeCString(ctx, s); }
+        return JS_NewBool(ctx, false);
+    }
+    // Existing-directory errors are harmless; opening the temporary file
+    // below reports an actual inaccessible/missing destination as a failure.
+    sys::sceIoMkdir(b"ms0:/PSP/SAVEDATA\0".as_ptr(), 0o777);
+    sys::sceIoMkdir(SAVE_DIR.as_ptr(), 0o777);
+    let fd = sys::sceIoOpen(
+        SAVE_TMP_PATH.as_ptr(),
+        IoOpenFlags::CREAT | IoOpenFlags::WR_ONLY | IoOpenFlags::TRUNC,
+        0o777,
+    );
+    let wrote_all = if fd.0 >= 0 {
+        let wrote = sys::sceIoWrite(fd, s as *const c_void, len);
+        sys::sceIoClose(fd);
+        wrote == len as i32
+    } else { false };
+    JS_FreeCString(ctx, s);
+    if !wrote_all { return JS_NewBool(ctx, false); }
+    sys::sceIoRemove(SAVE_BAK_PATH.as_ptr());
+    sys::sceIoRename(SAVE_PATH.as_ptr(), SAVE_BAK_PATH.as_ptr());
+    let ok = sys::sceIoRename(SAVE_TMP_PATH.as_ptr(), SAVE_PATH.as_ptr()) >= 0;
+    JS_NewBool(ctx, ok)
+}
+
 /// `remoteOpen()` — bind the Mac companion's fixed desktop `.pkst` stream.
 /// False is a retryable "daemon/share not ready", never a fatal boot error.
 unsafe extern "C" fn js_remote_open(
@@ -375,6 +478,9 @@ pub unsafe fn register(ctx: *mut JSContext, global: JSValue) {
     add_fn(ctx, obj, b"gamedata\0", js_gamedata, 0);
     add_fn(ctx, obj, b"audiodata\0", js_audiodata, 0);
     add_fn(ctx, obj, b"stats\0", js_stats, 0);
+    add_fn(ctx, obj, b"bootLog\0", js_boot_log, 1);
+    add_fn(ctx, obj, b"saveLoad\0", js_save_load, 0);
+    add_fn(ctx, obj, b"saveWrite\0", js_save_write, 1);
     add_fn(ctx, obj, b"remoteOpen\0", js_remote_open, 0);
     add_fn(ctx, obj, b"remoteTick\0", js_remote_tick, 0);
     add_fn(ctx, obj, b"remoteClose\0", js_remote_close, 0);

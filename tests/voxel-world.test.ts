@@ -28,7 +28,7 @@ import {
   type VoxelmonData,
 } from "../voxelmon/game/data.ts";
 import { seqRng } from "../voxelmon/game/rng.ts";
-import { ENCOUNTER_BUCKETS } from "../voxelmon/game/rules/encounter.ts";
+import { effectiveRate, ENCOUNTER_BUCKETS } from "../voxelmon/game/rules/encounter.ts";
 import { VoxelmonGame } from "../voxelmon/game/game.ts";
 import { RecorderHost } from "../voxelmon/game/host.ts";
 import { Input } from "../voxelmon/game/input.ts";
@@ -93,9 +93,12 @@ function supportFixture(groundHeights?: number[]): { map: GameMap; def: MapDef }
   return { map: new GameMap(def, tileset), def };
 }
 
-function makeGame(seed = 1): VoxelmonGame {
-  const game = new VoxelmonGame(romData!, new RecorderHost(), seed);
+function makeGame(seed = 1, legacyEncounters = false): VoxelmonGame {
+  const data = legacyEncounters ? { ...romData!, partyIcons: undefined } : romData!;
+  const game = new VoxelmonGame(data, new RecorderHost(), seed);
   game.newGame();
+  game.chooseStarter("SQUIRTLE");
+  game.save.flags.EVENT_FOLLOWED_OAK_INTO_LAB = true;
   return game;
 }
 
@@ -384,7 +387,7 @@ describe("entity terrain support (VoxelScene.groundAt)", () => {
         sprites: { SPRITE_RED: { id: "SPRITE_RED", frames: 6 } },
         atlas: { sprites: { red: 2, poke_ball: 3 } },
       },
-      overworld: { map, player, npcs: [npc], emote: undefined },
+      overworld: { map, player, npcs: [npc], wild: { slots: [] }, emote: undefined },
       uiBox: () => null,
       uiChoice: () => null,
       pcDesktop: () => null,
@@ -404,7 +407,7 @@ describe("entity terrain support (VoxelScene.groundAt)", () => {
 
     const ops = entArgs(host);
     expect(ops.filter((args) => args[0] === 0).map((args) => args[5])).toEqual([15, 15, 16]);
-    expect(ops.find((args) => args[0] === 1)?.[5]).toBe(6);
+    expect(ops.find((args) => args[0] === 1)?.[5]).toBe(0);
   });
 
   test.skipIf(!hasGroundProfile)(
@@ -776,18 +779,18 @@ describe("connections", () => {
     expect(viridian).toEqual({ id: "VIRIDIAN_CITY", ox: -160, oy: -576 });
   });
 
-  test.skipIf(!hasGen)("PALLET north edge crosses into ROUTE_1 with position continuity", () => {
+  test.skipIf(!hasGen)("PALLET north edge hard-loads ROUTE_1", () => {
     const game = makeGame();
     const ow = game.overworld;
     ow.setMap("PALLET_TOWN", 10, 1, "up");
     ow.refreshStandingOnWarp();
     const p = ow.player;
     walk(game, VOX_BTN.up, 1); // (10,0)
-    walk(game, VOX_BTN.up, 1); // the seam step
+    walk(game, VOX_BTN.up, 1); // starts the hard scene load
     expect(ow.map.id).toBe("ROUTE_1");
     // destX = curX - offset*2 = 10; entry row = heightCells-1 = 35
     expect([p.cellX, p.cellY]).toEqual([10, 35]);
-    // continuity: the seam step was one continuous 16-frame walk
+    // the destination starts cleanly rather than retaining the seam strip
     expect(p.moving).toBe(false);
   });
 
@@ -816,13 +819,514 @@ describe("connections", () => {
   });
 });
 
+describe("Pokémon Red economy", () => {
+  test.skipIf(!hasGen)("new game, trainer prizes, cap, and blackout update saved money", () => {
+    const game = makeGame();
+    expect(game.save.money).toBe(3000);
+
+    expect(
+      game.awardTrainerMoney(
+        "BROCK",
+        "OPP_BROCK",
+        [{ level: 12 }, { level: 14 }],
+      ),
+    ).toBe(1386);
+    expect(game.save.money).toBe(4386);
+
+    game.save.money = 999990;
+    game.awardTrainerMoney("BROCK", "OPP_BROCK", [{ level: 14 }]);
+    expect(game.save.money).toBe(999999);
+
+    game.save.money = 3001;
+    game.blackout();
+    expect(game.save.money).toBe(1500);
+  });
+
+  test.skipIf(!hasGen)("blackout returns to Mom until a Center becomes the checkpoint", () => {
+    const home = makeGame();
+    const homeMon = home.save.party[0]!;
+    homeMon.hp = 0;
+    homeMon.status = "PSN";
+    home.overworld.setMap("VIRIDIAN_FOREST", 16, 20, "down");
+    home.save.lastHeal = { map: "PALLET_TOWN", x: 5, y: 6 }; // old-save default
+    home.blackout();
+    idle(home, 80);
+    expect(home.overworld.map.id).toBe("REDS_HOUSE_1F");
+    expect([home.overworld.player.cellX, home.overworld.player.cellY]).toEqual([4, 6]);
+    expect(homeMon.hp).toBe(homeMon.stats.hp);
+    expect(homeMon.status).toBeNull();
+
+    const center = makeGame();
+    const centerMon = center.save.party[0]!;
+    centerMon.hp = 0;
+    center.save.lastHeal = { map: "VIRIDIAN_POKECENTER", x: 3, y: 6 };
+    center.overworld.setMap("VIRIDIAN_FOREST", 16, 20, "down");
+    center.blackout();
+    idle(center, 80);
+    expect(center.overworld.map.id).toBe("VIRIDIAN_POKECENTER");
+    expect([center.overworld.player.cellX, center.overworld.player.cellY]).toEqual([3, 6]);
+    expect(center.overworld.lastOutdoor?.id).not.toBe("VIRIDIAN_FOREST");
+    expect(centerMon.hp).toBe(centerMon.stats.hp);
+  });
+});
+
+describe("title and save", () => {
+  test.skipIf(!hasGen)("new game starts at title and Continue restores map, party, and flags", () => {
+    const host = new RecorderHost();
+    const first = new VoxelmonGame(romData!, host, 9);
+    first.newGame();
+    first.chooseStarter("CHARMANDER");
+    first.overworld.setMap("ROUTE_1", 10, 20, "up");
+    first.save.flags.TEST_SAVE_FLAG = true;
+    expect(first.saveGame()).toBe(true);
+
+    const resumed = new VoxelmonGame(romData!, host, 9);
+    resumed.boot();
+    expect(resumed.stackKinds()).toEqual(["overworld", "title"]);
+    tap(resumed, VOX_BTN.start);
+    resumed.tick(0);
+    tap(resumed, VOX_BTN.a);
+    expect(resumed.stackKinds()).toEqual(["overworld"]);
+    expect(resumed.overworld.map.id).toBe("ROUTE_1");
+    expect([resumed.overworld.player.cellX, resumed.overworld.player.cellY]).toEqual([10, 20]);
+    expect(resumed.save.party[0]?.species).toBe("CHARMANDER");
+    expect(resumed.save.flags.TEST_SAVE_FLAG).toBe(true);
+  });
+
+  test.skipIf(!hasGen)("corrupt save suppresses Continue", () => {
+    const host = new RecorderHost();
+    host.savedJson = "{broken";
+    const game = new VoxelmonGame(romData!, host, 1);
+    game.boot();
+    expect(game.hasSave()).toBe(false);
+    expect(game.loadGame()).toBe(false);
+  });
+
+  test.skipIf(!hasGen)("START menu SAVE writes the current game", () => {
+    const host = new RecorderHost();
+    const game = new VoxelmonGame(romData!, host, 2);
+    game.newGame();
+    game.chooseStarter("BULBASAUR");
+    tap(game, VOX_BTN.start);
+    tap(game, VOX_BTN.down);
+    tap(game, VOX_BTN.down);
+    tap(game, VOX_BTN.down);
+    tap(game, VOX_BTN.a);
+    expect(host.savedJson).not.toBeNull();
+    expect(JSON.parse(host.savedJson!).save.party[0].species).toBe("BULBASAUR");
+  });
+
+  test.skipIf(!hasGen)("START menu music switch slows walking and persists", () => {
+    const host = new RecorderHost();
+    const game = new VoxelmonGame(romData!, host, 3);
+    game.newGame();
+    expect(game.musicEnabled).toBe(false);
+    expect(game.overworld.player.stepFrames).toBe(16);
+
+    tap(game, VOX_BTN.start);
+    tap(game, VOX_BTN.down);
+    tap(game, VOX_BTN.down);
+    tap(game, VOX_BTN.a);
+    expect(game.musicEnabled).toBe(true);
+    expect(game.overworld.player.stepFrames).toBe(24);
+
+    tap(game, VOX_BTN.down);
+    tap(game, VOX_BTN.a);
+    const resumed = new VoxelmonGame(romData!, host, 3);
+    expect(resumed.loadGame()).toBe(true);
+    expect(resumed.musicEnabled).toBe(true);
+    expect(resumed.overworld.player.stepFrames).toBe(24);
+
+    resumed.setMusicEnabled(false);
+    expect(resumed.overworld.player.stepFrames).toBe(16);
+  });
+
+  test.skipIf(!hasGen)("START menu POKEMON reorders the active lineup", () => {
+    const game = makeGame();
+    game.save.party.push(newMon(game.data, "CHARMANDER", 5));
+    expect(game.save.party.map((mon) => mon.species)).toEqual(["SQUIRTLE", "CHARMANDER"]);
+    game.openParty();
+    idle(game, 300);
+    tap(game, VOX_BTN.down); // choose Charmander
+    tap(game, VOX_BTN.a);
+    idle(game, 300);
+    tap(game, VOX_BTN.a); // move to slot 1
+    idle(game, 30);
+    expect(game.save.party.map((mon) => mon.species)).toEqual(["CHARMANDER", "SQUIRTLE"]);
+  });
+
+  test.skipIf(!hasGen)("TM34 is visible, teaches Bide once, and HM01 remains reusable", () => {
+    const tm = makeGame();
+    tm.save.inventory.TM_BIDE = 1;
+    tm.openBag();
+    idle(tm, 300);
+    tap(tm, VOX_BTN.a); // TM34
+    idle(tm, 300);
+    tap(tm, VOX_BTN.a); // Squirtle
+    idle(tm, 30);
+    expect(tm.save.party[0]!.moves.some((move) => move.id === "BIDE")).toBe(true);
+    expect(tm.save.inventory.TM_BIDE).toBeUndefined();
+
+    const hm = makeGame();
+    hm.save.party[0] = newMon(hm.data, "BULBASAUR", 5);
+    hm.save.inventory.HM_CUT = 1;
+    hm.openBag();
+    idle(hm, 300);
+    tap(hm, VOX_BTN.a); // HM01
+    idle(hm, 300);
+    tap(hm, VOX_BTN.a); // Bulbasaur
+    idle(hm, 30);
+    expect(hm.save.party[0]!.moves.some((move) => move.id === "CUT")).toBe(true);
+    expect(hm.save.inventory.HM_CUT).toBe(1);
+  });
+
+  test.skipIf(!hasGen)("New Game runs the intro and default player/rival naming flow", () => {
+    const game = new VoxelmonGame(romData!, new RecorderHost(), 2);
+    game.boot();
+    tap(game, VOX_BTN.start);
+    tap(game, VOX_BTN.a);
+    for (let i = 0; i < 5000 && game.stackKinds().length > 1; i++) {
+      game.tick(i % 2 === 0 ? VOX_BTN.a : 0);
+    }
+    expect(game.stackKinds()).toEqual(["overworld"]);
+    expect(game.save.player).toEqual({ name: "RED", rival: "BLUE" });
+    expect(game.save.party).toHaveLength(0);
+  });
+});
+
+describe("Oak new-game flow", () => {
+  test.skipIf(!hasGen)("Oak approaches, escorts the player, and returns control inside the lab", () => {
+    const game = new VoxelmonGame(romData!, new RecorderHost(), 3);
+    game.newGame();
+    const ow = game.overworld;
+    ow.setMap("PALLET_TOWN", 10, 2, "up");
+    walk(game, VOX_BTN.up, 1);
+    for (let i = 0; i < 5000 && !game.save.flags.EVENT_OAK_ASKED_TO_CHOOSE_MON; i++) {
+      game.tick(i % 2 === 0 ? VOX_BTN.a : 0);
+    }
+    expect(ow.map.id).toBe("OAKS_LAB");
+    expect(game.save.flags.EVENT_FOLLOWED_OAK_INTO_LAB).toBe(true);
+    expect(game.save.flags.EVENT_OAK_ASKED_TO_CHOOSE_MON).toBe(true);
+    expect(game.save.party).toHaveLength(0);
+  });
+
+  test.skipIf(!hasGen)("Oak's escort reaches the lab door at the music-on walk speed", () => {
+    const game = new VoxelmonGame(romData!, new RecorderHost(), 31);
+    game.newGame();
+    game.setMusicEnabled(true);
+    const ow = game.overworld;
+    ow.setMap("PALLET_TOWN", 10, 2, "up");
+    walk(game, VOX_BTN.up, 1);
+    for (let i = 0; i < 7000 && !game.save.flags.EVENT_OAK_ASKED_TO_CHOOSE_MON; i++) {
+      game.tick(i % 2 === 0 ? VOX_BTN.a : 0);
+    }
+    expect(ow.map.id).toBe("OAKS_LAB");
+    expect(game.save.flags.EVENT_OAK_ASKED_TO_CHOOSE_MON).toBe(true);
+    expect(ow.player.stepFrames).toBe(24);
+  });
+
+  test.skipIf(!hasGen)("each lab ball grants the selected starter instead of forced Squirtle", () => {
+    for (const [species, x] of [["CHARMANDER", 6], ["SQUIRTLE", 7], ["BULBASAUR", 8]] as const) {
+      const game = new VoxelmonGame(romData!, new RecorderHost(), 4);
+      game.newGame();
+      game.save.flags.EVENT_FOLLOWED_OAK_INTO_LAB = true;
+      game.overworld.setMap("OAKS_LAB", x, 4, "up");
+      tap(game, VOX_BTN.a);
+      for (let i = 0; i < 300 && game.stackKinds().includes("textbox"); i++) game.tick(i % 2 ? 0 : VOX_BTN.a);
+      tap(game, VOX_BTN.a);
+      idle(game, 20);
+      expect(game.save.party[0]?.species).toBe(species);
+      expect(game.save.flags[`EVENT_CHOSE_${species}`]).toBe(true);
+    }
+  });
+
+  test.skipIf(!hasGen)("leaving the starter table triggers Blue's counter-starter battle once", () => {
+    const game = new VoxelmonGame(romData!, new RecorderHost(), 5);
+    game.newGame();
+    game.save.flags.EVENT_FOLLOWED_OAK_INTO_LAB = true;
+    game.chooseStarter("BULBASAUR");
+    game.overworld.setMap("OAKS_LAB", 5, 5, "down");
+    walk(game, VOX_BTN.down, 1);
+    for (let i = 0; i < 500 && !game.battleView(); i++) game.tick(i % 2 ? 0 : VOX_BTN.a);
+    expect(game.save.flags.EVENT_BATTLED_RIVAL_IN_OAKS_LAB).toBe(true);
+    expect(game.battleView()?.battle.enemy?.mon.species).toBe("CHARMANDER");
+  });
+});
+
+describe("Pallet-to-Brock chapter", () => {
+  test.skipIf(!hasGen)("expanded cooker exposes the complete first-chapter map chain", () => {
+    for (const id of [
+      "VIRIDIAN_POKECENTER", "VIRIDIAN_MART", "ROUTE_2",
+      "VIRIDIAN_FOREST_SOUTH_GATE", "VIRIDIAN_FOREST",
+      "VIRIDIAN_FOREST_NORTH_GATE", "PEWTER_CITY",
+      "PEWTER_POKECENTER", "PEWTER_MART", "PEWTER_GYM",
+    ]) expect(DEFAULT_MAPS).toContain(id);
+  });
+
+  test.skipIf(!hasGen)("a Center nurse heals and becomes the blackout checkpoint", () => {
+    const game = makeGame();
+    const mon = game.save.party[0]!;
+    mon.hp = 1;
+    mon.status = "PSN";
+    game.overworld.setMap("VIRIDIAN_POKECENTER", 3, 2, "up");
+    const nurse = game.overworld.npcs.find((npc) => npc.def.name.endsWith("POKECENTER_NURSE"))!;
+    game.overworld.talkTo(nurse);
+    for (let i = 0; i < 1000 && (mon.hp !== mon.stats.hp || mon.status); i++) {
+      game.tick(i % 2 === 0 ? VOX_BTN.a : 0);
+    }
+    expect(mon.hp).toBe(mon.stats.hp);
+    expect(mon.status).toBeNull();
+    expect(game.save.lastHeal).toEqual({ map: "VIRIDIAN_POKECENTER", x: 3, y: 6 });
+  });
+
+  test.skipIf(!hasGen)("Viridian Mart opens its full stock and completes a purchase", () => {
+    const game = makeGame();
+    game.overworld.setMap("VIRIDIAN_MART", 3, 6, "up");
+    const clerk = game.overworld.npcs.find((npc) => npc.def.name.endsWith("MART_CLERK"))!;
+    expect(clerk).toBeDefined();
+    game.overworld.talkTo(clerk);
+    idle(game, 300); // welcome text reveals, then BUY/SELL/QUIT opens
+    expect(game.stackKinds().at(-1)).toBe("choice");
+    tap(game, VOX_BTN.a); // BUY
+    idle(game, 300); // answer hold + stock prompt reveal
+    expect(game.stackKinds().at(-1)).toBe("choice");
+    const money = game.save.money;
+    if (money === undefined) throw new Error("new game must initialize money");
+    tap(game, VOX_BTN.a); // first row: POKé BALL
+    idle(game, 20);
+    expect(game.save.inventory.POKE_BALL).toBe(1);
+    expect(game.save.money).toBe(money - game.data.items!.POKE_BALL!.price);
+  });
+
+  test.skipIf(!hasGen)("Forest item balls disappear persistently after pickup", () => {
+    const game = makeGame();
+    game.overworld.setMap("VIRIDIAN_FOREST", 24, 11, "right");
+    const ball = game.overworld.npcs.find((npc) => npc.def.name === "VIRIDIANFOREST_ANTIDOTE")!;
+    game.overworld.talkTo(ball);
+    expect(game.save.inventory.ANTIDOTE).toBe(1);
+    expect(game.save.flags.EVENT_TAKEN_VIRIDIANFOREST_ANTIDOTE).toBe(true);
+    game.overworld.setMap("VIRIDIAN_FOREST", 24, 11, "right");
+    expect(game.overworld.npcs.some((npc) => npc.def.name === "VIRIDIANFOREST_ANTIDOTE")).toBe(false);
+  });
+
+  test.skipIf(!hasGen)("Brock sends Geodude then Onix and awards badge plus TM34", () => {
+    const game = makeGame();
+    game.overworld.setMap("PEWTER_GYM", 4, 2, "up");
+    const brock = game.overworld.npcs.find((npc) => npc.def.name === "PEWTERGYM_BROCK")!;
+    game.overworld.talkTo(brock);
+    for (let i = 0; i < 1500 && !game.battleView(); i++) game.tick(i % 2 === 0 ? VOX_BTN.a : 0);
+    expect(game.battleView()?.battle.enemy.mon.species).toBe("GEODUDE");
+    game.battleView()!.battle.finished = "win";
+    game.tick(0);
+    expect(game.battleView()?.battle.enemy.mon.species).toBe("ONIX");
+    game.battleView()!.battle.finished = "win";
+    game.tick(0);
+    for (let i = 0; i < 1500 && !game.save.flags.EVENT_BEAT_BROCK; i++) {
+      game.tick(i % 2 === 0 ? VOX_BTN.a : 0);
+    }
+    expect(game.save.flags.EVENT_BEAT_BROCK).toBe(true);
+    expect(game.save.flags.EVENT_GOT_TM34).toBe(true);
+    expect(game.save.inventory.BOULDERBADGE).toBe(1);
+    expect(game.save.inventory.TM_BIDE).toBe(1);
+    expect(game.save.money).toBe(4386);
+  });
+
+  test.skipIf(!hasGen)("Pewter's east exit stays blocked until Brock is beaten", () => {
+    const game = makeGame();
+    game.overworld.setMap("PEWTER_CITY", 39, 16, "right");
+    const east = game.overworld.map.def.connections.east!;
+    expect(game.overworld.crossConnection("right", east)).toBe(true);
+    expect(game.overworld.map.id).toBe("PEWTER_CITY");
+    expect(game.stackKinds().at(-1)).toBe("textbox");
+
+    game.save.flags.EVENT_BEAT_BROCK = true;
+    while (game.stackKinds().at(-1) === "textbox") tap(game, VOX_BTN.a);
+    expect(game.overworld.crossConnection("right", east)).toBe(true);
+    idle(game, 80);
+    expect(game.overworld.map.id).toBe("ROUTE_3");
+  });
+});
+
+describe("Route 22 through Cerulean chapter", () => {
+  test.skipIf(!hasGen)("cooker includes the Nidoran detour, Mt. Moon, and Misty's city", () => {
+    for (const id of [
+      "ROUTE_22", "ROUTE_22_GATE", "ROUTE_3", "ROUTE_4",
+      "MT_MOON_POKECENTER", "MT_MOON_1F", "MT_MOON_B1F", "MT_MOON_B2F",
+      "CERULEAN_CITY", "CERULEAN_POKECENTER", "CERULEAN_MART", "CERULEAN_GYM",
+    ]) expect(DEFAULT_MAPS).toContain(id);
+    expect(romData!.encounters.ROUTE_22.grass?.slots.some((slot) => slot.species === "NIDORAN_F")).toBe(true);
+  });
+
+  test.skipIf(!hasGen)("Route 22 Gary uses the ROM party selected by the rival starter", () => {
+    const game = makeGame(); // Squirtle means Gary chose Bulbasaur.
+    game.overworld.setMap("ROUTE_22", 29, 4, "left");
+    game.overworld.onStepComplete();
+    for (let i = 0; i < 1000 && !game.battleView(); i++) game.tick(i % 2 === 0 ? VOX_BTN.a : 0);
+    const battle = game.battleView()?.battle;
+    expect(battle?.enemy.mon.species).toBe("PIDGEY");
+    expect(battle?.enemy.mon.level).toBe(9);
+  });
+
+  test.skipIf(!hasGen)("Misty's ROM roster is Staryu 18 and Starmie 21", () => {
+    expect(romData!.trainers?.OPP_MISTY.parties[0]).toEqual([
+      { level: 18, species: "STARYU" },
+      { level: 21, species: "STARMIE" },
+    ]);
+  });
+
+  test.skipIf(!hasGen)("the Mt. Moon Center salesman sells one level-5 Magikarp for ¥500", () => {
+    const game = makeGame();
+    game.save.money = 3000;
+    game.overworld.setMap("MT_MOON_POKECENTER", 10, 5, "up");
+    const salesman = game.overworld.npcs.find(
+      (npc) => npc.def.name === "MTMOONPOKECENTER_MAGIKARP_SALESMAN",
+    )!;
+    expect(salesman).toBeDefined();
+    game.overworld.talkTo(salesman);
+    idle(game, 300);
+    expect(game.stackKinds().at(-1)).toBe("choice");
+    tap(game, VOX_BTN.a);
+    idle(game, 300);
+    expect(game.save.money).toBe(2500);
+    expect(game.save.party.at(-1)?.species).toBe("MAGIKARP");
+    expect(game.save.party.at(-1)?.level).toBe(5);
+    expect(game.save.flags.EVENT_BOUGHT_MAGIKARP).toBe(true);
+    expect(game.buyMagikarp()).toBe("already-bought");
+  });
+});
+
+describe("Vermilion, S.S. Anne, and Diglett's Cave", () => {
+  test.skipIf(!hasGen)("the complete ship and Diglett tunnel loop are cooked", () => {
+    for (const id of [
+      "ROUTE_11", "DIGLETTS_CAVE_ROUTE_11", "DIGLETTS_CAVE",
+      "DIGLETTS_CAVE_ROUTE_2", "VERMILION_DOCK", "SS_ANNE_1F",
+      "SS_ANNE_1F_ROOMS", "SS_ANNE_2F", "SS_ANNE_2F_ROOMS",
+      "SS_ANNE_3F", "SS_ANNE_B1F", "SS_ANNE_B1F_ROOMS",
+      "SS_ANNE_BOW", "SS_ANNE_KITCHEN", "SS_ANNE_CAPTAINS_ROOM",
+    ]) expect(DEFAULT_MAPS).toContain(id);
+    expect(romData!.encounters.DIGLETTS_CAVE).toBeDefined();
+  });
+
+  test.skipIf(!hasGen)("Diglett connecting houses and gate floors are included and return correctly", () => {
+    for (const id of ["ROUTE_2_TRADE_HOUSE", "ROUTE_2_GATE", "ROUTE_11_GATE_1F", "ROUTE_11_GATE_2F"]) {
+      expect(DEFAULT_MAPS).toContain(id);
+    }
+    for (const [route, interior] of [
+      ["ROUTE_2", "ROUTE_2_TRADE_HOUSE"],
+      ["ROUTE_2", "ROUTE_2_GATE"],
+      ["ROUTE_11", "ROUTE_11_GATE_1F"],
+    ]) {
+      const game = makeGame();
+      game.overworld.setMap(route, 0, 0, "down");
+      const door = game.overworld.map.def.warps.find(w => w.destMap === interior)!;
+      game.overworld.takeWarp(door);
+      idle(game, 80);
+      expect(game.overworld.map.id).toBe(interior);
+      expect(game.overworld.npcs.length).toBeGreaterThan(0);
+      if (interior === "ROUTE_11_GATE_1F") {
+        game.overworld.takeWarp(game.overworld.map.def.warps.find(w => w.destMap === "ROUTE_11_GATE_2F")!);
+        idle(game, 80);
+        expect(game.overworld.map.id).toBe("ROUTE_11_GATE_2F");
+        game.overworld.takeWarp(game.overworld.map.def.warps[0]);
+        idle(game, 80);
+        expect(game.overworld.map.id).toBe(interior);
+      }
+      game.overworld.takeWarp(game.overworld.map.def.warps.find(w => w.destMap === "LAST_MAP")!);
+      idle(game, 80);
+      expect(game.overworld.map.id).toBe(route);
+    }
+  });
+
+  test.skipIf(!hasGen)("Diglett's Cave can be traversed between both routes", () => {
+    for (const [source, target] of [["ROUTE_2", "ROUTE_11"], ["ROUTE_11", "ROUTE_2"]]) {
+      const game = makeGame();
+      game.overworld.setMap(source, 0, 0, "down");
+      const enter = (destination: string) => {
+        const warp = game.overworld.map.def.warps.find(w => w.destMap === destination)!;
+        expect(warp).toBeDefined();
+        game.overworld.takeWarp(warp);
+        idle(game, 80);
+      };
+      enter(`DIGLETTS_CAVE_${source}`);
+      enter("DIGLETTS_CAVE");
+      expect(game.overworld.map.id).toBe("DIGLETTS_CAVE");
+      enter(`DIGLETTS_CAVE_${target}`);
+      enter("LAST_MAP");
+      expect(game.overworld.map.id).toBe(target);
+    }
+  });
+
+  test.skipIf(!hasGen)("each Diglett foyer exits onto its own physical route", () => {
+    for (const [foyer, route] of [
+      ["DIGLETTS_CAVE_ROUTE_2", "ROUTE_2"],
+      ["DIGLETTS_CAVE_ROUTE_11", "ROUTE_11"],
+    ] as const) {
+      const game = makeGame();
+      // Deliberately remember the opposite side: this reproduces a complete
+      // tunnel traversal and guards against generic LAST_MAP misrouting.
+      game.overworld.lastOutdoor = { id: route === "ROUTE_2" ? "ROUTE_11" : "ROUTE_2", x: 0, y: 0 };
+      game.overworld.setMap(foyer, 2, 6, "down");
+      const exit = game.overworld.map.def.warps.find((w) => w.destMap === "LAST_MAP")!;
+      game.overworld.takeWarp(exit);
+      idle(game, 40);
+      expect(game.overworld.map.id).toBe(route);
+      const physicalDoor = romData!.maps![route]!.warps.find((w) => w.destMap === foyer)!;
+      expect(game.overworld.player.cellX).toBe(physicalDoor.x);
+      expect([physicalDoor.y, physicalDoor.y + 1]).toContain(game.overworld.player.cellY);
+    }
+  });
+
+  test.skipIf(!hasGen)("the S.S. Anne requires a Ticket and departs after HM01", () => {
+    const game = makeGame();
+    game.overworld.setMap("VERMILION_CITY", 18, 30, "down");
+    const dock = game.overworld.map.def.warps.find((w) => w.destMap === "VERMILION_DOCK")!;
+    delete game.save.inventory.SS_TICKET;
+    game.overworld.takeWarp(dock);
+    expect(game.overworld.map.id).toBe("VERMILION_CITY");
+    expect(game.stackKinds().at(-1)).toBe("textbox");
+
+    while (game.stackKinds().at(-1) === "textbox") tap(game, VOX_BTN.a);
+    game.save.inventory.SS_TICKET = 1;
+    game.overworld.takeWarp(dock);
+    idle(game, 80);
+    expect(game.overworld.map.id).toBe("VERMILION_DOCK");
+
+    game.overworld.setMap("SS_ANNE_1F", 26, 1, "up");
+    game.save.flags.EVENT_GOT_HM01 = true;
+    const leave = game.overworld.map.def.warps.find((w) => w.destMap === "VERMILION_DOCK")!;
+    game.overworld.takeWarp(leave);
+    expect(game.save.flags.EVENT_SS_ANNE_LEFT).toBe(true);
+  });
+
+  test.skipIf(!hasGen)("ship item balls, trainers, rival, and captain events are wired", () => {
+    const game = makeGame();
+    game.overworld.setMap("SS_ANNE_1F_ROOMS", 0, 0, "down");
+    const tm = game.overworld.npcs.find((n) => n.def.name === "SSANNE1FROOMS_TM_BODY_SLAM")!;
+    game.overworld.talkTo(tm);
+    expect(game.save.inventory.TM_BODY_SLAM).toBe(1);
+    expect(game.save.flags.EVENT_TAKEN_SSANNE1FROOMS_TM_BODY_SLAM).toBe(true);
+
+    game.overworld.setMap("SS_ANNE_CAPTAINS_ROOM", 4, 3, "up");
+    const captain = game.overworld.npcs.find((n) => n.def.name === "SSANNECAPTAINSROOM_CAPTAIN")!;
+    game.overworld.talkTo(captain);
+    expect(game.save.inventory.HM_CUT).toBe(1);
+    expect(game.save.flags.EVENT_GOT_HM01).toBe(true);
+
+    game.overworld.setMap("SS_ANNE_BOW", 0, 0, "down");
+    const sailor = game.overworld.npcs.find((n) => n.def.name === "SSANNEBOW_SAILOR2")!;
+    game.overworld.talkTo(sailor);
+    for (let i = 0; i < 800 && !game.battleView(); i++) game.tick(i % 2 ? 0 : VOX_BTN.a);
+    expect(game.battleView()?.battle.enemy.mon.species).toBeDefined();
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Layer 2 — encounters through the overworld path (Encounter.lua:22-39)
 // ---------------------------------------------------------------------------
 
 describe("encounters", () => {
   const grassStep = (rate: number, pick: number) => {
-    const game = makeGame();
+    const game = makeGame(1, true);
     const ow = game.overworld;
     ow.setMap("ROUTE_1", 11, 6, "down");
     ow.refreshStandingOnWarp();
@@ -831,10 +1335,10 @@ describe("encounters", () => {
     return game;
   };
 
-  test.skipIf(!hasGen)("rate gate: rand(0..255) >= rate rolls nothing", () => {
+  test.skipIf(!hasGen)("rate gate uses the handheld-adjusted ROM rate", () => {
     const rate = romData!.encounters.ROUTE_1.grass!.rate;
     expect(rate).toBe(25);
-    const game = grassStep(rate, 0); // roll == rate: NOT less-than -> no battle
+    const game = grassStep(effectiveRate(rate), 0); // equality still fails the strict gate
     expect(game.overworld.encounterCount).toBe(0);
     expect(game.stackKinds()).toEqual(["overworld"]);
   });
@@ -864,7 +1368,7 @@ describe("encounters", () => {
   });
 
   test.skipIf(!hasGen)("no roll on plain ground; rolls only on completed grass steps", () => {
-    const game = makeGame();
+    const game = makeGame(1, true);
     const ow = game.overworld;
     ow.setMap("ROUTE_1", 9, 16, "down");
     ow.refreshStandingOnWarp();
@@ -884,6 +1388,37 @@ describe("encounters", () => {
     // the player stayed exactly where the encounter fired — nothing moves
     // the player; the camera goes to the arena (docs/VOXEL.md §4)
     expect([game.overworld.player.cellX, game.overworld.player.cellY]).toEqual([11, 7]);
+  });
+
+  test.skipIf(!hasGen)("cave encounters roll only after a completed walkable step", () => {
+    const game = makeGame(1, true);
+    const ow = game.overworld;
+    ow.setMap("MT_MOON_1F", 5, 5, "down");
+    game.rng = seqRng(0, 0);
+    const before = ow.encounterCount;
+    tap(game, VOX_BTN.left); // turn-only input cannot roll
+    expect(ow.encounterCount).toBe(before);
+
+    let walked = false;
+    for (let y = 1; y < ow.map.heightCells - 1 && !walked; y++) {
+      for (let x = 1; x < ow.map.widthCells - 1 && !walked; x++) {
+        if (
+          !ow.map.isWalkableCell(x, y) ||
+          !ow.map.isWalkableCell(x + 1, y) ||
+          ow.map.warpAtCell(x, y) ||
+          ow.map.warpAtCell(x + 1, y) ||
+          ow.npcAtCell(x, y) ||
+          ow.npcAtCell(x + 1, y)
+        ) continue;
+        ow.setMap("MT_MOON_1F", x, y, "right");
+        game.rng = seqRng(0, 0);
+        walk(game, VOX_BTN.right, 1);
+        walked = true;
+      }
+    }
+    expect(walked).toBe(true);
+    expect(ow.encounterCount).toBe(before + 1);
+    expect(game.stackKinds().at(-1)).toBe("battle");
   });
 });
 
@@ -922,11 +1457,12 @@ const STORY_SEED = 17;
 
 async function runStoryInProcess(): Promise<RecorderHost> {
   const host = new RecorderHost();
-  const game = new VoxelmonGame(romData!, host, STORY_SEED);
+  const game = new VoxelmonGame({ ...romData!, partyIcons: undefined }, host, STORY_SEED);
   // sim/cli.ts installs the audio banks before newGame; the `audiodata` op it
   // emits is part of the trace, so this run has to do the same to compare.
   game.setAudio(await loadAudioBanks(genDir));
   game.newGame();
+  game.chooseStarter("SQUIRTLE");
   const tapeText = await Bun.file(join(root, "voxelmon/tapes/story.tape")).text();
   const tape = new TapePlayer(parseTape(tapeText));
   while (!tape.done && game.tickIndex < 100_000) {
@@ -998,6 +1534,7 @@ describe("story tape", () => {
         [
           "bun",
           "voxelmon/game/sim/cli.ts",
+          "--legacy-encounters",
           "--tape",
           "voxelmon/tapes/story.tape",
           "--out",

@@ -1,6 +1,7 @@
 // Port of gen1recomp RomExtractor.lua extractSprites (lines 440-520).
 // Red has no surfing-Pikachu sheet; that Yellow-only branch is not ported.
 
+import { extractPartyIconGraphics } from "./party-icons.ts";
 import { check } from "../ctx.ts";
 import type { Ctx } from "../ctx.ts";
 import { decode2bpp } from "../gfx.ts";
@@ -77,5 +78,6 @@ export function extractSprites(ctx: Ctx): Record<string, unknown> {
     frames: bikeFrames,
     walker: bikeFrames >= 6,
   };
+  extractPartyIconGraphics(ctx);
   return out;
 }

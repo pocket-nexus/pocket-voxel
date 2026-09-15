@@ -32,6 +32,8 @@ import {
   CAM_FOCAL,
   CELL_PX,
   CHUNK_DRAW_DIST_PX,
+  PSP_CHUNK_DRAW_DIST_PX,
+  PSP_DETAIL_DRAW_DIST_PX,
   CHUNK_PX,
   CHUNK_TILES,
   CLASS_HEIGHT,
@@ -237,8 +239,11 @@ export function generateVoxelRust(): string {
   put("/// `draw::within_dist` (a 0 dial still admits the chunk underfoot via");
   put("/// the half-extent widening; off needs its own value).");
   put(`pub const QUALITY_OFF: f32 = ${f32(QUALITY_OFF)};`);
-  put("/// The chunk distance cap: 2.5 view-heights, held at every rung.");
+  put("/// Reference chunk distance cap: 2.5 view-heights.");
   put(`pub const CHUNK_DRAW_DIST_PX: f32 = ${f32(CHUNK_DRAW_DIST_PX)};`);
+  put("/// PSP-1000 live-radius caps for constrained outdoor working sets.");
+  put(`pub const PSP_CHUNK_DRAW_DIST_PX: f32 = ${f32(PSP_CHUNK_DRAW_DIST_PX)};`);
+  put(`pub const PSP_DETAIL_DRAW_DIST_PX: f32 = ${f32(PSP_DETAIL_DRAW_DIST_PX)};`);
   put("");
   put("/// One rung's dials. Distances are world px, measured from the view");
   put("/// centre to a chunk's own centre — all through `draw::within_dist`.");

@@ -23,18 +23,19 @@
 //! (98f035d): every other PocketJS host presses on CIRCLE, and a player
 //! with the rest of the family on their stick must not find A dead here.
 //!
-//! Memory: the 21 MB pak is loaded from a FILE next to the EBOOT into one
-//! reused 16-aligned buffer (the OpenStrike maps.rs pattern) — NEVER
-//! include_bytes!. A PSP-1000's 24 MB user partition cannot hold the pak
-//! plus the QuickJS heap, so the current pak is slim/PPSSPP-only:
-//! tools/voxel.ts stamps MEMSIZE=1 into the PARAM.SFO (full PSP-2000 64 MB
-//! under PPSSPP and CFW slims). Streaming chunks from the pak file is the
-//! flagged follow-up for fat hardware.
+//! Memory: the pak remains a FILE next to the EBOOT. Only textures, GAME,
+//! AUDIO, palettes, and small tables stay resident; CHNK geometry is read
+//! into one reusable current-map cache. The full pak is never allocated.
 
 extern crate alloc;
+use alloc::boxed::Box;
 
 mod remote;
+mod debug;
+mod model;
 mod voxel;
+
+mod pak_file;
 
 // The autopilot build borrows only the scripted-button half of capture.rs;
 // its dump/exit half stays dead there (real GE present, no VRAM dumps).
@@ -52,16 +53,21 @@ use pocketvoxel_core::pak;
 use pocketvoxel_core::scene::Scene;
 use pocketvoxel_core::spec;
 use pocketvoxel_gu as gu;
-use psp::sys::{
-    self, CtrlButtons, CtrlMode, GuContextType, GuSyncBehavior, GuSyncMode, IoOpenFlags,
-    IoWhence, SceCtrlData,
-};
+use psp::sys::{self, CtrlButtons, CtrlMode, GuContextType, GuSyncBehavior, GuSyncMode, IoOpenFlags, SceCtrlData};
 
 psp::module!("voxelmon", 1, 0);
 
-/// The bundled gameplay guest (voxelmon/game/psp-main.ts via
-/// `bun build`), NUL-terminated by build.rs; evaled with `len - 1`.
-static APP_JS: &str = include_str!(concat!(env!("OUT_DIR"), "/game.js"));
+// Normal player builds are deliberately silent. Some launchers expose the
+// PSP debug stream over the framebuffer, and formatting it also costs time.
+// Capture/performance builds retain the breadcrumbs their runbooks need.
+#[cfg(any(feature = "capture", feature = "telemetry", feature = "autopilot"))]
+macro_rules! device_log { ($($arg:tt)*) => { psp::dprintln!($($arg)*); } }
+#[cfg(not(any(feature = "capture", feature = "telemetry", feature = "autopilot")))]
+macro_rules! device_log { ($($arg:tt)*) => {}; }
+
+/// The bundled gameplay guest (voxelmon/game/psp-main.ts via `bun build`),
+/// compiled and serialized by build.rs with the same pinned QuickJS revision.
+static APP_BYTECODE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/game.qjbc"));
 
 /// Pak search order: PSPLINK/PPSSPP (host0: is the EBOOT's own directory),
 /// then a Memory Stick install.
@@ -73,6 +79,15 @@ const PAK_PATHS: [&[u8]; 2] = [
 /// The analog stick reads 0..255 with 128 at rest; this much off-centre
 /// counts as a direction (a well-used nub does not sit exactly at centre).
 const NUB_DEADZONE: i32 = 48;
+
+/// Build the transition working set. PSP-1000 keeps only the exact first
+/// visible view: speculative cardinal probes made dense maps such as
+/// Viridian Forest reserve several extra megabytes before play began.
+/// Adjacent chunks stream on demand afterward, trading a small movement hitch
+/// for reliable heap headroom.
+fn deep_working_set(scene: &mut Scene, pak: &pak::Pak<'_>) -> draw::WorkingSet {
+    draw::working_set(scene, pak)
+}
 
 // ---------------------------------------------------------------------------
 // Audio: the chip synth's output rate and the ring pump's budget
@@ -143,7 +158,16 @@ static mut AUDIO_UNDERRUNS: u32 = 0;
 // (the established local-extern pattern, hosts/psp/src/main.rs).
 extern "C" {
     fn JS_RunGC(rt: *mut JSRuntime);
+    fn JS_ReadObject(
+        ctx: *mut JSContext,
+        buf: *const u8,
+        buf_len: usize,
+        flags: i32,
+    ) -> JSValue;
+    fn JS_EvalFunction(ctx: *mut JSContext, fun_obj: JSValue) -> JSValue;
 }
+
+const JS_READ_OBJ_BYTECODE: i32 = 1;
 
 /// Arena bump high-water at the last host-forced collection (the hosts/psp
 /// arena-pressure GC — QuickJS's own lazy threshold otherwise lets slab
@@ -170,66 +194,26 @@ unsafe fn log_exception(ctx: *mut JSContext) {
     host::log_exception_with(ctx, |_| {});
 }
 
-/// Load the pak file into ONE dedicated kernel block (16-aligned for the
-/// zero-copy reader), write it back for the GE, and hand out the 'static
-/// slice. The block is never freed — the pak's borrowed pools live for the
-/// whole process.
-///
-/// A kernel block, NOT the Rust heap: the arena global allocator is a
-/// power-of-two-class sub-allocator, so a 21 MB pak allocated through it
-/// would burn a 32 MB class — most of the partition — and the first
-/// grass-heavy frame's pool growth would OOM-park the EBOOT (measured;
-/// the alloc_error_handler waits on vblank forever, invisibly, under
-/// PPSSPPHeadless). MUST run before the arena's lazy init so the arena
-/// sizes itself over what remains.
-unsafe fn load_pak_blob() -> Option<&'static [u8]> {
-    for path in PAK_PATHS {
-        let fd = sys::sceIoOpen(path.as_ptr(), IoOpenFlags::RD_ONLY, 0o777);
-        if fd.0 < 0 {
-            continue;
-        }
-        let size = sys::sceIoLseek(fd, 0, IoWhence::End);
-        sys::sceIoLseek(fd, 0, IoWhence::Set);
-        if size <= 0 {
-            sys::sceIoClose(fd);
-            continue;
-        }
-        let size = size as usize;
-        let id = sys::sceKernelAllocPartitionMemory(
-            sys::SceSysMemPartitionId::SceKernelPrimaryUserPartition,
-            b"voxelmon-pak\0".as_ptr(),
-            sys::SceSysMemBlockTypes::Low,
-            (size + 16) as u32,
-            core::ptr::null_mut(),
-        );
-        if id.0 < 0 {
-            sys::sceIoClose(fd);
-            continue;
-        }
-        let base = sys::sceKernelGetBlockHeadAddr(id) as usize;
-        let ptr = ((base + 15) & !15) as *mut u8;
-        let mut off = 0usize;
-        loop {
-            if off >= size {
-                break;
-            }
-            let n = sys::sceIoRead(fd, ptr.add(off) as *mut c_void, (size - off) as u32);
-            if n <= 0 {
-                break;
-            }
-            off += n as usize;
-        }
-        sys::sceIoClose(fd);
-        if off != size {
-            continue; // truncated read; try the next root
-        }
-        let blob = core::slice::from_raw_parts(ptr, size);
-        // The GE bypasses the dcache: write the whole pak back once so
-        // vertex/index pools and swizzled texels are visible in place.
-        gu::writeback(blob);
-        return Some(blob);
-    }
-    None
+unsafe fn log_quickjs_memory(stage: &str) {
+    let heap = pocketjs_psp::qjs_alloc::stats();
+    let backing = arena::stats();
+    device_log!(
+        "[voxelmon] qjs mem {}: live {} KB, peak {} KB, arena bump {} KB, tail {} KB, calls {}, largest {} bytes, failed {} bytes",
+        stage,
+        heap.live_requested.div_ceil(1024),
+        heap.peak_requested.div_ceil(1024),
+        backing.bump_bytes.div_ceil(1024),
+        backing.tail_free_bytes / 1024,
+        heap.alloc_calls,
+        heap.largest_request,
+        heap.last_failed_request,
+    );
+}
+
+fn bytecode_fingerprint() -> u32 {
+    APP_BYTECODE.iter().fold(2_166_136_261u32, |hash, byte| {
+        (hash ^ u32::from(*byte)).wrapping_mul(16_777_619)
+    })
 }
 
 unsafe fn run() {
@@ -237,16 +221,22 @@ unsafe fn run() {
     // not apply the PBP's MEMSIZE, so a dev session can get the 24 MB user
     // partition where an XMB launch gets ~56 MB. Knowing which is which is
     // the difference between "the guest is too fat" and "this session is".
-    psp::dprintln!(
+    device_log!(
         "[voxelmon] boot: max free {} KB",
         sys::sceKernelMaxFreeMemSize() / 1024
     );
-    // ---- Pak FIRST: its dedicated kernel block must exist before the
-    // arena's lazy init (first Rust allocation) sizes the arena over the
-    // remaining partition — see load_pak_blob.
-    let Some(blob) = load_pak_blob() else {
-        host::halt("voxelmon.vxpak not found (host0:/ or ms0:/PSP/GAME/VOXELMON/)");
-    };
+    // Index first, then retain only non-geometry sections. CHNK/STMP bulk
+    // never enters the resident image; map geometry comes from the reusable
+    // file-backed cache below.
+    let (mut pak_file, pak_index) = PAK_PATHS
+        .iter()
+        .find_map(|path| pak_file::PakFileReader::open_index(path).ok())
+        .unwrap_or_else(|| host::halt("voxelmon.vxpak not found or invalid"));
+    let startup_game = pak_file
+        .load_startup(&pak_index)
+        .unwrap_or_else(|e| host::halt(e));
+    let startup_game_raw: *mut [u8] = Box::into_raw(startup_game.into_boxed_slice());
+    let startup_game: &'static [u8] = &*startup_game_raw;
 
     psp::enable_home_button();
     // Full clocks. PSPLINK launches modules at its own 222 MHz default, and
@@ -256,19 +246,14 @@ unsafe fn run() {
 
     sys::sceCtrlSetSamplingCycle(0);
     sys::sceCtrlSetSamplingMode(CtrlMode::Analog);
-    let pak = match pak::read(blob) {
-        Ok(p) => p,
-        Err(e) => host::halt(e),
-    };
-    psp::dprintln!(
-        "[voxelmon] pak: {} maps, {} chunks, {} verts, {} atlases, {} KB game",
-        pak.maps.len(),
-        pak.chunks.len(),
-        pak.verts.len(),
-        pak.atlases.len(),
-        pak.game.len() / 1024,
+    device_log!(
+        "[voxelmon] pak index: {} maps, {} chunks, {} atlases; startup GAME {} KB; audio deferred",
+        pak_index.maps.len(),
+        pak_index.chunks.len(),
+        pak_index.atlases.len(),
+        startup_game.len().div_ceil(1024),
     );
-    psp::dprintln!(
+    device_log!(
         "[voxelmon] arena {} KB free, kernel free {} KB",
         arena::stats().tail_free_bytes / 1024,
         sys::sceKernelMaxFreeMemSize() / 1024,
@@ -276,13 +261,14 @@ unsafe fn run() {
 
     // The GAME section borrows from the leaked (never-freed) blob, so the
     // 'static it carries is honest.
-    voxel::init(pak.game);
+    voxel::init(startup_game);
     // The chip synth's banks (pak AUDI section) reach the guest through the
     // `audiodata` op: the manifest half tells the guest which bank and address
     // a song lives at, and the program half stays in the pak, where the core
     // reads it. Mounting the data is a host capability, not a host policy —
     // the guest decides whether to decode it.
-    voxel::set_audio(pak.audio);
+    // TODO(PSP-1000 audio): AUDIO is intentionally never read from storage.
+    // Restore it only after the file-backed graphics path leaves measured RAM.
     // The synth's output rate for the whole run, set before any audio op can
     // reach the core (changing it later drops what is playing, because every
     // event's span is measured in samples). Cannot fail for a rate that
@@ -305,18 +291,66 @@ unsafe fn run() {
     // the `ui` surface this EBOOT does not use).
     pocketjs_psp::ffi::register_audio(ctx, global);
 
-    let res = JS_Eval(
-        ctx,
-        APP_JS.as_ptr() as *const _,
-        APP_JS.len() - 1, // exclude the trailing NUL
-        b"voxelmon.js\0".as_ptr() as *const _,
-        JS_EVAL_TYPE_GLOBAL as i32,
+    device_log!(
+        "[voxelmon] qjbc embedded: {} bytes, fnv1a {:08x}",
+        APP_BYTECODE.len(),
+        bytecode_fingerprint(),
     );
+    log_quickjs_memory("before read");
+    let compiled = JS_ReadObject(
+        ctx,
+        APP_BYTECODE.as_ptr(),
+        APP_BYTECODE.len(),
+        JS_READ_OBJ_BYTECODE,
+    );
+    log_quickjs_memory("after read");
+    if JS_ValueGetTag(compiled) == JS_TAG_EXCEPTION {
+        log_exception(ctx);
+        host::halt("JS_ReadObject threw");
+    }
+    // JS_EvalFunction takes ownership of the deserialized function object.
+    let res = JS_EvalFunction(ctx, compiled);
+    log_quickjs_memory("after eval");
     if JS_ValueGetTag(res) == JS_TAG_EXCEPTION {
         log_exception(ctx);
-        host::halt("JS_Eval threw");
+        host::halt("JS_EvalFunction threw");
     }
     JS_FreeValue(ctx, res);
+
+    // native.gamedata() is boot-only. The parsed game owns independent
+    // QuickJS objects now, so return the 1+ MB transport buffer to the arena
+    // before any streamed map or audio state is allocated.
+    voxel::release_game();
+    drop(Box::from_raw(startup_game_raw));
+    JS_RunGC(rt);
+    log_quickjs_memory("after GAME release");
+
+    // The guest's cold GAME read and initial scene ops are complete.
+    // Only now retain the complete non-geometry pak used by rendering/audio.
+    let resident_blob: &'static pak_file::ResidentBlob = Box::leak(Box::new(
+        pak_file.load_resident(&pak_index).unwrap_or_else(|e| host::halt(e)),
+    ));
+    let pak = match pak::read_streaming_resident(resident_blob.bytes(), &pak_index) {
+        Ok(p) => p,
+        Err(e) => host::halt(e),
+    };
+    voxel::init_data(&[], pak.audio);
+    let enable_audio = JS_GetPropertyStr(ctx, global, b"enableAudio\0".as_ptr() as *const _);
+    if JS_IsUndefined(enable_audio) {
+        host::halt("globalThis.enableAudio is undefined");
+    }
+    let audio_res = JS_Call(ctx, enable_audio, global, 0, core::ptr::null_mut());
+    JS_FreeValue(ctx, enable_audio);
+    if JS_ValueGetTag(audio_res) == JS_TAG_EXCEPTION {
+        log_exception(ctx);
+        host::halt("enableAudio threw");
+    }
+    JS_FreeValue(ctx, audio_res);
+    log_quickjs_memory("after audio enable");
+    device_log!(
+        "[voxelmon] resident pak after eval: {} KB (geometry/atlas omitted, audio enabled)",
+        resident_blob.allocated_bytes().div_ceil(1024),
+    );
 
     let frame_fn = JS_GetPropertyStr(ctx, global, b"frame\0".as_ptr() as *const _);
     if JS_IsUndefined(frame_fn) {
@@ -324,6 +358,27 @@ unsafe fn run() {
     }
 
     let mut renderer = gu::Renderer::new();
+    let mut map_geometry = pak_file::MapGeometry::new();
+    let mut atlas_cache = pak_file::AtlasCache::new();
+
+    // Pay the first working-set IO cost while startup is still finishing.
+    // This intentionally makes the load longer so the first playable frame
+    // starts with its geometry and texture pages warm instead of hitching.
+    let startup_working_set = deep_working_set(voxel::scene(), &pak);
+    map_geometry
+        .sync(&mut pak_file, &pak_index, &startup_working_set)
+        .unwrap_or_else(|e| host::halt(e));
+    atlas_cache
+        .sync(&mut pak_file, &pak_index, &startup_working_set)
+        .unwrap_or_else(|e| host::halt(e));
+    sys::sceKernelDcacheWritebackAll();
+    device_log!(
+        "[voxelmon] startup working set preloaded: geometry {} KB, atlases {} KB",
+        map_geometry.resident_bytes().div_ceil(1024),
+        atlas_cache.allocated_bytes().div_ceil(1024),
+    );
+    let mut debug_panel = debug::DebugPanel::new();
+    let mut primary_map = voxel::scene().maps[0].map_id;
     let mut pad = SceCtrlData::default();
     let mut frame: u32 = 0;
 
@@ -346,6 +401,7 @@ unsafe fn run() {
     loop {
         t_frame_start = sys::sceKernelGetSystemTimeLow();
         gc_frame_us = 0;
+        let mut deep_load = false;
         for _tick_step in 0..TICKS_PER_PRESENT {
         sys::sceCtrlPeekBufferPositive(&mut pad, 1);
         #[cfg(not(any(feature = "capture", feature = "autopilot")))]
@@ -356,11 +412,19 @@ unsafe fn run() {
         #[cfg(any(feature = "capture", feature = "autopilot"))]
         let mask = capture::scripted_buttons(frame);
 
+        #[cfg(not(any(feature = "capture", feature = "autopilot")))]
+        let mask = debug_panel.buttons(mask);
+
         // One guest turn per host tick: frame(buttons), exactly once.
         let mut args = [JS_NewInt32(ctx, mask as i32)];
         let r = JS_Call(ctx, frame_fn, global, 1, args.as_mut_ptr());
+        let mut reload_request = 0i32;
         if JS_ValueGetTag(r) == JS_TAG_EXCEPTION {
             log_exception(ctx);
+        } else {
+            // psp-frame.ts: bit 0 = Start edge, bit 1 = map entry, even
+            // when a warp/Fly lands in the same map and emits no mapShow.
+            JS_ToInt32(ctx, &mut reload_request, r);
         }
         JS_FreeValue(ctx, r);
         host::drain_jobs(rt);
@@ -380,22 +444,50 @@ unsafe fn run() {
         // does). The ring is pre-fed to cover the stall either way.
         let swapped = voxel::take_map_swapped();
         let scene = voxel::scene();
+        let next_primary_map = scene.maps[0].map_id;
+        let reload_scene = reload_request & 3 != 0 || primary_map != next_primary_map;
+        let reload_reason = match reload_request & 3 {
+            1 => "START", 3 => "START + MAP", _ => "MAP ENTRY",
+        };
+        deep_load |= reload_scene;
+        let cleanup_before = if reload_scene {
+            // Keep music supplied across the synchronous unload/GC/reload.
+            for _ in 0..8 { audio_pump_with_lead(scene, &pak, GC_LEAD_FRAMES); }
+            sys::sceGuSync(GuSyncMode::Finish, GuSyncBehavior::Wait);
+            let before = debug::Memory::read();
+            map_geometry.unload();
+            atlas_cache.unload();
+            renderer.release_transients();
+            device_log!("[voxelmon] {}: unloaded {} -> {}", reload_reason, primary_map, next_primary_map);
+            Some(before)
+        } else { None };
+        primary_map = next_primary_map;
         let gc_us = {
             const GC_BUMP_STEP: usize = 256 * 1024;
             let bump = arena::stats().bump_bytes;
             let pressure = bump > LAST_GC_BUMP.saturating_add(GC_BUMP_STEP);
             let emergency = bump > LAST_GC_BUMP.saturating_add(4 * GC_BUMP_STEP);
-            if pressure && (swapped || emergency) {
+            // A long outdoor map has no swap on which to hide collection.
+            // The arena can become class-fragmented while its bump barely
+            // moves, so pressure alone is not a sufficient signal. Reclaim
+            // unreachable guest objects every ten seconds of uninterrupted
+            // play; the occasional held frame is preferable to a fatal
+            // PocketJS allocation halfway through Viridian Forest.
+            const MAINTENANCE_GC_TICKS: u32 = 600;
+            let maintenance = frame != 0 && frame % MAINTENANCE_GC_TICKS == 0;
+            if reload_scene || maintenance || (pressure && (swapped || emergency)) {
                 // Top the audio ring up past the stall first: the pump's
                 // steady lead is 100 ms, a collection is longer, and the
                 // mixer starving mid-cut would put a pop where the design
                 // put silence-free continuity. Each call renders at most
                 // AUDIO_MAX_FRAMES, so reaching the deep lead takes a few.
-                for _ in 0..8 {
-                    audio_pump_with_lead(scene, &pak, GC_LEAD_FRAMES);
+                if !reload_scene {
+                    for _ in 0..8 { audio_pump_with_lead(scene, &pak, GC_LEAD_FRAMES); }
                 }
+                let before = cleanup_before.unwrap_or_else(|| debug::Memory::read());
                 let t_gc = sys::sceKernelGetSystemTimeLow();
                 JS_RunGC(rt);
+                debug_panel.record_cleanup(before, debug::Memory::read(), if reload_scene { reload_reason } else { "GC" }, reload_scene);
                 LAST_GC_BUMP = arena::stats().bump_bytes;
                 sys::sceKernelGetSystemTimeLow().wrapping_sub(t_gc)
             } else {
@@ -434,12 +526,18 @@ unsafe fn run() {
             capture::heartbeat(frame);
             if capture::is_mark(frame) {
                 capture::log_line("mark: build");
-                let list = draw::build(scene, &pak);
+                let (list, working_set) = draw::build_with_working_set(scene, &pak);
+                if map_geometry.sync(&mut pak_file, &pak_index, &working_set).unwrap_or_else(|e| host::halt(e)) {
+                    device_log!("[voxelmon] streamed geometry high-water: {} KB used, {} KB allocated; kernel free {} KB, arena tail {} KB", map_geometry.resident_bytes().div_ceil(1024), map_geometry.allocated_bytes().div_ceil(1024), sys::sceKernelMaxFreeMemSize() / 1024, arena::stats().tail_free_bytes / 1024);
+                }
+                if atlas_cache.sync(&mut pak_file, &pak_index, &working_set).unwrap_or_else(|e| host::halt(e)) {
+                    device_log!("[voxelmon] streamed atlases: {} KB allocated, {} KB peak", atlas_cache.allocated_bytes().div_ceil(1024), atlas_cache.peak_bytes().div_ceil(1024));
+                }
                 renderer.reset_pool(); // GE idle: fully synced below, every mark
                 remote::present(&mut renderer);
                 capture::log_line("mark: record");
                 sys::sceGuStart(GuContextType::Direct, host::list_ptr());
-                renderer.render(&list, &pak);
+                renderer.render_with_assets(&list, &pak, &map_geometry, &atlas_cache);
                 sys::sceGuFinish();
                 capture::log_line("mark: sync");
                 sys::sceGuSync(GuSyncMode::Finish, GuSyncBehavior::Wait);
@@ -466,7 +564,23 @@ unsafe fn run() {
         #[cfg(not(feature = "capture"))]
         {
             let t_guest_done = sys::sceKernelGetSystemTimeLow();
-            let list = draw::build(scene, &pak);
+            let (list, mut working_set) = draw::build_with_working_set(scene, &pak);
+            if deep_load {
+                working_set = deep_working_set(scene, &pak);
+            }
+            // Geometry and atlas Vec growth can move the buffers that the GE
+            // is still reading for frame N-1. Finish that list before cache
+            // mutation; ordinary warm-cache frames preserve the pipeline.
+            if map_geometry.needs_sync(&working_set) || atlas_cache.needs_sync(&working_set) {
+                sys::sceGuSync(GuSyncMode::Finish, GuSyncBehavior::Wait);
+            }
+            if map_geometry.sync(&mut pak_file, &pak_index, &working_set).unwrap_or_else(|e| host::halt(e)) {
+                device_log!("[voxelmon] streamed geometry high-water: {} KB used, {} KB allocated; kernel free {} KB, arena tail {} KB", map_geometry.resident_bytes().div_ceil(1024), map_geometry.allocated_bytes().div_ceil(1024), sys::sceKernelMaxFreeMemSize() / 1024, arena::stats().tail_free_bytes / 1024);
+            }
+            if atlas_cache.sync(&mut pak_file, &pak_index, &working_set).unwrap_or_else(|e| host::halt(e)) {
+                device_log!("[voxelmon] streamed atlases: {} KB allocated, {} KB peak", atlas_cache.allocated_bytes().div_ceil(1024), atlas_cache.peak_bytes().div_ceil(1024));
+            }
+            debug_panel.update(frame, ctx, global, scene, &pak, &map_geometry, &atlas_cache);
             let t_work_done = sys::sceKernelGetSystemTimeLow();
             sys::sceGuSync(GuSyncMode::Finish, GuSyncBehavior::Wait);
             let t_synced = sys::sceKernelGetSystemTimeLow();
@@ -482,7 +596,8 @@ unsafe fn run() {
             renderer.reset_pool(); // GE idle: safe to rewind (pool contract)
             remote::present(&mut renderer); // staged pixels commit only while GE-idle
             sys::sceGuStart(GuContextType::Direct, host::list_ptr());
-            renderer.render(&list, &pak);
+            renderer.render_with_assets(&list, &pak, &map_geometry, &atlas_cache);
+            renderer.render_debug_overlay(debug_panel.rects());
             let t_recorded = sys::sceKernelGetSystemTimeLow();
             // Belt-and-braces coherence: ~0.1 ms flushes every dirty line
             // before the kick, so no per-write WritebackRange call can be
@@ -625,11 +740,11 @@ unsafe fn audio_pump_with_lead(scene: &mut Scene, pak: &pak::Pak<'_>, lead: usiz
             // No free channel or a rate the module rejects: run silent for
             // the rest of the session rather than retry 60 times a second.
             AUDIO_REFUSED = true;
-            psp::dprintln!("[voxelmon] audio: stream refused, running silent");
+            device_log!("[voxelmon] audio: stream refused, running silent");
             return;
         }
         AUDIO_FREE = audio_spec::RING_FRAMES;
-        psp::dprintln!("[voxelmon] audio: {} Hz stereo stream open", AUDIO_RATE);
+        device_log!("[voxelmon] audio: {} Hz stereo stream open", AUDIO_RATE);
     }
 
     while let Some(event) = audio_mod::poll() {
@@ -646,7 +761,7 @@ unsafe fn audio_pump_with_lead(scene: &mut Scene, pak: &pak::Pak<'_>, lead: usiz
             if AUDIO_UNDERRUNS == 1 {
                 // Once per boot: the first starve is the diagnosis (the pump
                 // fell behind the audio clock), the rest are its echo.
-                psp::dprintln!("[voxelmon] audio: ring starved, refilling");
+                device_log!("[voxelmon] audio: ring starved, refilling");
             }
         }
     }
@@ -848,13 +963,13 @@ unsafe fn autopilot_sample(
         );
     }
     if frame % 300 == 0 {
-        psp::dprintln!("[voxelmon] autopilot: tick {}", frame);
+        device_log!("[voxelmon] autopilot: tick {}", frame);
     }
     // The tape is over one grace-second after its last mark: flush, exit.
     let last = capture::last_mark_tick();
     if frame >= last.saturating_add(60) {
         perf_write(log);
-        psp::dprintln!("[voxelmon] autopilot: {} frames logged, exiting", frame + 1);
+        device_log!("[voxelmon] autopilot: {} frames logged, exiting", frame + 1);
         sys::sceKernelExitGame();
     }
 }

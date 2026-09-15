@@ -189,6 +189,9 @@ export const QUALITY_OFF = -1;
  * Held at every rung — see the identity note above.
  */
 export const CHUNK_DRAW_DIST_PX = 2.5 * WORLD_VIEW_H;
+/** PSP-1000 live-radius caps: dense Forest foliage must fit beside QuickJS. */
+export const PSP_CHUNK_DRAW_DIST_PX = 256;
+export const PSP_DETAIL_DRAW_DIST_PX = 192;
 
 /**
  * The dials, indexed by `QUALITY_TIER`. Adding a dial is appending a field to
@@ -229,22 +232,12 @@ export const CHUNK_DRAW_DIST_PX = 2.5 * WORLD_VIEW_H;
  * stands.
  */
 export const QUALITY = [
-  // psp — retuned 2026-08-06 for the 30 fps present lock, under one rule the
-  // 60 fps push had traded away: NO camera-relative representation change
-  // inside the visible field. A distance dial whose boundary sits in view
-  // moves with every step, and the swap it hides becomes a walking artifact
-  // — the roadside light-tree ring twinkled coarse<->box at 96 px, the
-  // ground flipped baked<->live at the live-bubble's edge one cell ahead of
-  // the player, and grass popped in and out at its 96 px fade line (all
-  // three device-reported the same afternoon). Every distance dial on this
-  // rung is now either unbounded (ONE representation everywhere the frustum
-  // reaches) or off; what remains of the 60 fps savings are the UNIFORM
-  // dials — half density, coarse-only trees, bake-everywhere — which cannot
-  // flicker because they never switch. The measurements that priced the
-  // moving boundaries live on in docs/VOXEL.md §4a and §7.
+  // psp — bounded specifically for PSP-1000 RAM. Terrain ends at 256 px and
+  // ankle-height detail at 192 px; both boundaries are outside the immediate
+  // play space, trading distant pop-in for a smaller live Forest working set.
   {
-    grassDist: QUALITY_UNBOUNDED,
-    flowerDist: QUALITY_UNBOUNDED,
+    grassDist: PSP_DETAIL_DRAW_DIST_PX,
+    flowerDist: PSP_DETAIL_DRAW_DIST_PX,
     // Every carved tree this rung draws is the COARSE one (fine is OFF —
     // measured 2026-08-06 over the ring report: the underfoot fine ring
     // alone was 10 968 triangles on ROUTE_1 and 11 630 on PALLET_TOWN
@@ -253,7 +246,7 @@ export const QUALITY = [
     // pak cooked without the coarse stream.
     treeHullDist: QUALITY_OFF,
     treeCoarseDist: QUALITY_UNBOUNDED,
-    chunkDist: CHUNK_DRAW_DIST_PX,
+    chunkDist: PSP_CHUNK_DRAW_DIST_PX,
     pullDepthBias: 1,
     // OFF makes every eligible chunk draw the baked quad — including the
     // ground underfoot. The bake is exact at the rung-2 rest pitch by
@@ -262,16 +255,12 @@ export const QUALITY = [
     // relief, but its edge crossed a chunk seam one step ahead of the
     // player and the baked<->live swap read as the road jumping.
     groundBakeDist: QUALITY_OFF,
-    // Draw every FOURTH grass/flower quad (the cook packs each chunk's
+    // Draw every EIGHTH grass/flower quad (the cook packs each chunk's
     // detail quads in bit-reversed order, so any prefix of the index range
-    // is a stratified — spatially uniform — sample of the field). Unlike a
-    // fade distance this is uniform: no boundary, nothing to pop. It is
-    // also what pays for the unbounded dials above: within the route-1
-    // chunk reach the raw detail streams are 52k+20k triangles, the
-    // largest slices of the frame; 4 (with the coarse carve's rear
-    // hemisphere dropped at cook) holds the measured worst outdoor
-    // segments at the 33.3 ms present slot that 2 and 3 missed.
-    detailDensity: 4,
+    // is a stratified — spatially uniform — sample of the field). Forest's
+    // raw grass stream is the largest geometry allocation, so this is the
+    // principal permanent RAM reduction rather than a timed unload hack.
+    detailDensity: 8,
   },
   // vita — a placeholder, not a measurement. It was 192 px dials that were
   // measured pixel-identical to the top rung on the v1 maps; under the
@@ -399,20 +388,20 @@ export const CLEAR_OFFMAP_H = 32;
 /** The two solved over-the-shoulder rigs (offsets in world px). */
 export const RIG = {
   tele: {
-    side: 78.79,
-    back: 144.96,
-    height: 37.88,
+    side: 62,
+    back: 112,
+    height: 70,
     lookX: -0.26,
     lookY: 0.34,
-    frameH: 34.11,
+    frameH: 46,
   },
   wide: {
-    side: 41.98,
-    back: 41.16,
-    height: 28.48,
+    side: 34,
+    back: 38,
+    height: 48,
     lookX: -3.24,
     lookY: -1.35,
-    frameH: 55.62,
+    frameH: 58,
   },
 } as const;
 /** Idle drift: yaw ±2° over 26 s, dolly ±2% over 37 s (in ticks). */

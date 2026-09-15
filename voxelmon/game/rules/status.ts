@@ -298,9 +298,8 @@ export function residual(battler: StatusBattler, opponent: StatusBattler): strin
     // the shared Toxic counter multiplies (and advances on) the seed drain
     // too — the Gen 1 Leech Seed glitch
     // (HandlePoisonBurnLeechSeed_DecreaseOwnHP)
-    let dmg = Math.max(1, Math.floor(mon.stats.hp / 16));
+    let dmg = leechSeedDamage(mon.stats.hp, battler.toxicCounter);
     if (battler.toxicCounter !== undefined) {
-      dmg = dmg * battler.toxicCounter;
       battler.toxicCounter += 1;
     }
     dmg = Math.min(dmg, mon.hp);
@@ -309,4 +308,10 @@ export function residual(battler: StatusBattler, opponent: StatusBattler): strin
     msgs.push(fmt("LEECH SEED saps\n%s!", battler.name));
   }
   return msgs;
+}
+
+/** Gen I drains one sixteenth (6.25%) of the seeded Pokémon's max HP. */
+export function leechSeedDamage(maxHp: number, toxicCounter?: number): number {
+  const base = Math.max(1, Math.floor(maxHp / 16));
+  return toxicCounter === undefined ? base : base * toxicCounter;
 }

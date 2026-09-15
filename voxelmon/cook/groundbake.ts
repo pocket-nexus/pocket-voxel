@@ -107,7 +107,7 @@ export function bakeGround(
       // (u, v, y, z) and interpolate bilinearly by normalized rect coords.
       const corners = q.c.map(([x, y, z], i) => {
         const [u, v] = q.uv ? q.uv[i] : [q.u ?? 0, q.v ?? 0];
-        return { px: x, pz: z - y * TAN_PITCH, u, v: v + uvt.baseY, y, z };
+        return { px: x, pz: z - y * TAN_PITCH, u: u + uvt.baseX, v: v + uvt.baseY, y, z };
       });
       const lerpAt = (px: number, pz: number) => {
         // Inverse-bilinear on an axis-aligned projected rect degenerates to

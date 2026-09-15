@@ -93,11 +93,11 @@ export function desiredCards(
     !battle.enemyHidden &&
     battle.result !== "caught"
   ) {
-    const pic = picPageFor(data, battle.enemy.mon.species);
+    const pic = picPageFor(data, battle.enemy.transformedSpecies ?? battle.enemy.mon.species);
     if (pic >= 0) out.push({ side: 1, pic, x: ex, y: ey });
   }
   if (battle.player && !battle.player.fainted && !battle.showPlayerBack && !battle.sendingOut) {
-    const pic = backPageFor(data, battle.player.mon.species);
+    const pic = backPageFor(data, battle.player.transformedSpecies ?? battle.player.mon.species);
     if (pic >= 0) out.push({ side: 0, pic, x: px, y: py });
   }
   return out;
