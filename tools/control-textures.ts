@@ -66,4 +66,3 @@ export function bakeControlTextures(ROOT: string, BUILD_ROOT: string): Record<st
     POCKETVOXEL_DPAD_LEFT: bakeDpad('dpad-left', '0,0 7,6 255,0 252,0 0,255 7,249 255,255 252,255'),
   };
 }
-
