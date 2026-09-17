@@ -1,0 +1,15 @@
+{
+  "$schema": "https://pocketjs.dev/schema/pocket-2.json",
+  "pocket": 2,
+  "id": "dev.pocket-stack.voxel",
+  "name": "pocket-voxel",
+  "title": "Pocket Voxel",
+  "version": "0.1.0",
+  "engine": { "capabilities": { "requires": ["input.buttons", "input.touch"], "enhances": [] } },
+  "app": {
+    "entry": "host/symbian/main.ts",
+    "output": "pocket-voxel",
+    "framework": "solid",
+    "viewport": { "dynamic": { "default": [360, 640], "min": [360, 360], "max": [640, 640] } }
+  }
+}

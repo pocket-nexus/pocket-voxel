@@ -73,6 +73,10 @@ const UI_MENU_OPEN: u32 = 0x8000_0000;
 const UI_MENU_PRESSED: u32 = 0x4000_0000;
 const UI_POPUP_PRESSED: u32 = 0x2000_0000;
 
+#[cfg(target_os = "none")]
+use crate::gles2_compat::*;
+
+#[cfg(not(target_os = "none"))]
 unsafe extern "C" {
     fn glAlphaFunc(function: GLenum, reference: GLfloat);
     fn glBindTexture(target: GLenum, texture: GLuint);
@@ -237,6 +241,13 @@ impl Renderer {
             }
         }
         1
+    }
+
+    #[cfg(target_os = "none")]
+    pub fn abandon(&mut self) {
+        self.textures.clear();
+        self.controls.fill(0);
+        self.depth = 0;
     }
 
     pub unsafe fn shutdown(&mut self) {

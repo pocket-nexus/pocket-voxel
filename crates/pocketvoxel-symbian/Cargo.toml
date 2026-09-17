@@ -1,0 +1,21 @@
+[package]
+name = "pocketvoxel-symbian"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[lib]
+crate-type = ["staticlib"]
+
+[dependencies]
+pocketvoxel-core = { path = "../pocketvoxel-core", default-features = false, features = ["libm"] }
+pocketjs-symbian-core = { package = "pocketjs-ui-cabi", path = "../../vendor/pocketjs/engine/ui-cabi", default-features = false }
+libm = "0.2"
+
+[workspace]
+
+[profile.release]
+panic = "abort"
+opt-level = 3
+codegen-units = 1
+lto = true
