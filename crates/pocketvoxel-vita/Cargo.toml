@@ -43,9 +43,12 @@ vitasdk-sys = { version = "0.3.3", features = [
     "SceLibKernel_stub",
     "SceSysmodule_stub",
 ] }
-libquickjs-sys = { git = "https://github.com/pocket-stack/quickjs-rs.git", rev = "ba5bdd0dc013518768e76cd9e05cd30ed53dd35b" }
-pocketjs-core = { path = "../../vendor/pocketjs/engine/core", features = ["std"] }
-pocketjs-vita = { path = "../../vendor/pocketjs/hosts/vita" }
+libquickjs-sys = { git = "https://github.com/pocket-nexus/quickjs-rs.git", rev = "ba5bdd0dc013518768e76cd9e05cd30ed53dd35b" }
+pocketjs-core = { path = "../../vendor/pocketjs/engine/core" }
+# No default features: `usb-debug` is PocketJS's own dev wire (it links
+# taihen_stub_weak and SceVshBridge_stub), and this VPK borrows only the PKNT
+# transport in `pocketjs_vita::net`.
+pocketjs-vita = { path = "../../vendor/pocketjs/hosts/vita", default-features = false }
 pocketvoxel-core = { path = "../pocketvoxel-core" }
 pocketvoxel-gxm = { path = "../pocketvoxel-gxm" }
 # vita2d owns process-level GXM: the context, the shader patcher, the render

@@ -615,7 +615,7 @@ static int voxel_frame(const PocketRuntimeContactsInput *input) {
   return 1;
 }
 
-int pocket_runtime_frame_contacts(const PocketRuntimeContactsInput *input, unsigned int tick_count) {
+static int voxel_frames(const PocketRuntimeContactsInput *input, unsigned int tick_count) {
   unsigned int index;
   if (input == NULL || input->contact_count > POCKET_RUNTIME_MAX_CONTACTS) return 0;
   for (index = 0; index < tick_count; index += 1) {
@@ -624,8 +624,20 @@ int pocket_runtime_frame_contacts(const PocketRuntimeContactsInput *input, unsig
   return 1;
 }
 
+/* Game ticks per display-link callback, on both devices. The count the shell
+ * passes is PocketJS's cadence for its own UI apps: 2 on the iPhone 4S, and 1
+ * on the iPod touch 4 since PocketJS 8d33e23a. This game keeps 2 on both, the
+ * count it ran with before that change. */
+#define VOXEL_TICKS_PER_CALLBACK 2
+
+/* The shell's entry, once per display-link callback. */
+int pocket_runtime_frame_contacts(const PocketRuntimeContactsInput *input, unsigned int tick_count) {
+  (void)tick_count;
+  return voxel_frames(input, VOXEL_TICKS_PER_CALLBACK);
+}
+
 int pocket_runtime_tick_contacts(const PocketRuntimeContactsInput *input) {
-  return pocket_runtime_frame_contacts(input, 1);
+  return voxel_frames(input, 1);
 }
 
 int pocket_runtime_tick(const PocketRuntimeInput *input) {
@@ -642,7 +654,7 @@ int pocket_runtime_frame_ticks(int down, int x, int y, int hit, unsigned int tic
   PocketRuntimeContactsInput contacts = {0};
   contacts.contact_count = down ? 1 : 0;
   contacts.contacts[0] = (PocketRuntimeContact){0, x, y, hit};
-  return pocket_runtime_frame_contacts(&contacts, tick_count);
+  return voxel_frames(&contacts, tick_count);
 }
 
 int pocket_runtime_frame(int down, int x, int y, int hit) {
@@ -677,6 +689,10 @@ unsigned long pocket_runtime_damage_failures(void) { return 0; }
 unsigned long pocket_runtime_damage_full_redraws(void) { return 0; }
 unsigned long pocket_runtime_damage_pixels(void) { return 0; }
 int pocket_runtime_damage_bounds(int *bounds) { (void)bounds; return 0; }
+
+/* No shell-owned depth attachment: the renderer attaches its own depth
+ * renderbuffer (crates/pocketvoxel-iphone4s/src/gles1.rs). */
+uint32_t pocket_runtime_native_flags(void) { return 0; }
 
 int pocket_runtime_gl_initialize(void) {
   int initialized;

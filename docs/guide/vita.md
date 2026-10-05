@@ -47,8 +47,9 @@ There is no OpenGL on this machine. The native API, SceGxm, has **no
 fixed-function pipe at all** — every draw needs a compiled vertex/fragment
 program pair, and compiling on the console means the firmware module Sony
 does not install by default. So the backend brings programs that are already
-compiled: libvita2d's five, read out of `pocket3d-vita`'s `shaders/`
-directory — one copy, one attribution, the technique OpenStrike established.
+compiled: the four of libvita2d's five that it binds, kept in
+`crates/pocketvoxel-gxm/shaders/` with their provenance record — the
+technique OpenStrike's `pocket3d-vita` established.
 
 Two consequences shape the whole backend:
 

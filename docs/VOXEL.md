@@ -1116,8 +1116,10 @@ compiler is to bring programs that are already compiled.
 
 libvita2d's five are, and `pocket3d-vita` — the backend OpenStrike ships —
 established both the technique and the provenance record for reusing them.
-This backend reads the same `.gxp` binaries out of that crate's `shaders/`
-directory, so the tree keeps one copy and one attribution.
+This backend keeps the four `.gxp` binaries it binds in
+`crates/pocketvoxel-gxm/shaders/`, with their provenance record and
+libvita2d's license. (They were read out of PocketJS's `pocket3d-vita` until
+that crate moved to OpenStrike.)
 
 What those five give, and what they cost:
 
