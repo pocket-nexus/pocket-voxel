@@ -13,6 +13,7 @@ import { fileURLToPath } from 'node:url';
 import { assertLegacyIosIdentity, legacyIosDevice } from './ios-device.ts';
 import { rasterizeVoxelIcon } from './ios-artwork.ts';
 import { IPOD_INSTALLER, ipodAppReceiptPaths, parseInstalledIPodApp, shellQuote, userDeploymentScript } from '../vendor/pocketjs/tools/ipodtouch4-installation.ts';
+import { POCKET3D_ICON } from '../vendor/pocketjs/tools/pocket3d-icon.ts';
 
 import {
   IPHONE4S_TOOLCHAIN,
@@ -38,8 +39,15 @@ const OUTPUT_ROOT = join(ROOT, 'dist', DEVICE.name);
 const BUNDLE_PATH = join(OUTPUT_ROOT, BUNDLE);
 const RECEIPT_PATH = join(BUNDLE_PATH, 'build-receipt.json');
 const PAK = join(ROOT, 'dist/voxelmon/voxelmon.vxpak');
+// The Pocket Voxel mark: the launch image, the in-app popup, and the iPhone 4S icon.
 const ICON_SOURCE = join(ROOT, 'web/favicon.svg');
-const ICON_BASENAME = DEVICE.userApp ? 'PocketVoxelMark-User-v5' : 'PocketVoxelMark-v3';
+// The iPod touch 4 app is a User app. Its SpringBoard icon is the Pocket3D app
+// icon, copied from the PocketJS checkout as Icon.png and Icon@2x.png.
+// The iPhone 4S app is installed as a System app under /Applications, where
+// the icon file carries its own transparent corner mask (bakeArtwork checks
+// it). PocketJS has no Pocket3D icon in that form, so that bundle keeps the
+// Pocket Voxel mark.
+const ICON_BASENAME = DEVICE.userApp ? 'Icon' : 'PocketVoxelMark-v3';
 const KEY = process.env[`${DEVICE.prefix}_KEY`] ?? join(DEVICE.cacheRoot, 'ssh/id_rsa');
 const KNOWN_HOSTS = process.env[`${DEVICE.prefix}_KNOWN_HOSTS`] ?? join(DEVICE.cacheRoot, 'ssh/known_hosts');
 const KNOWN_HOST_ALIAS = `[127.0.0.1]:${DEVICE.deployment.localPort}`;
@@ -173,13 +181,18 @@ async function withTunnel<T>(operation: (port: number) => Promise<T> | T): Promi
 
 async function bakeArtwork(): Promise<void> {
   const font = join(ROOT, 'vendor/pocketjs/assets/fonts/InterDisplay-Bold.ttf');
-  // User applications receive SpringBoard's native mask and shadow. Fill the
-  // source's transparent corners with its own face color to avoid a second rim.
-  for (const [name, size] of [[`${ICON_BASENAME}.png`, 57], [`${ICON_BASENAME}@2x.png`, 114]] as const) {
-    const output = join(BUNDLE_PATH, name);
-    writeFileSync(output, (await rasterizeVoxelIcon(size, DEVICE.userApp)).toBuffer('image/png'));
-    const alpha = mustRun('magick', ['identify', '-format', `%[fx:p{0,0}.a] %[fx:p{${Math.floor(size / 2)},${Math.floor(size / 2)}}.a] %[opaque]`, output]);
-    if (alpha.toLowerCase() !== (DEVICE.userApp ? '1 1 true' : '0 1 false')) throw new Error(`${name} has an invalid installation mask: ${alpha}`);
+  if (DEVICE.userApp) {
+    // User applications receive SpringBoard's native mask and shadow over the
+    // opaque Pocket3D icon; UIPrerenderedIcon in Info.plist keeps the gloss off.
+    cpSync(POCKET3D_ICON.ios, join(BUNDLE_PATH, `${ICON_BASENAME}.png`));
+    cpSync(POCKET3D_ICON.ios2x, join(BUNDLE_PATH, `${ICON_BASENAME}@2x.png`));
+  } else {
+    for (const [name, size] of [[`${ICON_BASENAME}.png`, 57], [`${ICON_BASENAME}@2x.png`, 114]] as const) {
+      const output = join(BUNDLE_PATH, name);
+      writeFileSync(output, (await rasterizeVoxelIcon(size)).toBuffer('image/png'));
+      const alpha = mustRun('magick', ['identify', '-format', `%[fx:p{0,0}.a] %[fx:p{${Math.floor(size / 2)},${Math.floor(size / 2)}}.a] %[opaque]`, output]);
+      if (alpha.toLowerCase() !== '0 1 false') throw new Error(`${name} has an invalid installation mask: ${alpha}`);
+    }
   }
   const mark = join(BUILD_ROOT, 'voxel-mark.png');
   writeFileSync(mark, (await rasterizeVoxelIcon(512)).toBuffer('image/png'));

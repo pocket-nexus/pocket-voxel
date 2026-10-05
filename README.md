@@ -39,6 +39,16 @@ renderer starts, and in the Web Player before the game starts**. The card is
 PocketJS's `pocket3d-title`, 144 ticks at 60 Hz. The iPhone 4S / iPod touch 4
 and Cardputer Zero hosts have no drawer for it and do not show it yet.
 
+The app icon is the Pocket3D app icon: **the XMB's `ICON0.PNG`, the PS Vita
+bubble's `icon0.png` and the iPod touch 4's `Icon.png` / `Icon@2x.png` are the
+files under `vendor/pocketjs/engine/pocket3d/icon/`**, read by each build and
+by the web build that serves them to the browser packager. This repository
+tracks no icon file for those consoles. The rule covers the icon only: the
+PSP's `PIC1.png` and the PS Vita LiveArea's `bg.png` and `startup.png` are
+unchanged. The iPhone 4S app and the Cardputer Zero launcher entry keep the
+Pocket Voxel mark: PocketJS has no icon file in the form those two launchers
+read.
+
 ## You bring the ROM
 
 This repository is **ROM-fed, exactly like upstream gen1recomp**: the only
@@ -47,7 +57,7 @@ verifies its SHA-1 before decoding one byte, everything decoded lands under
 git-ignored `dist/`, and **no ROM-derived byte is ever committed** — no
 cooked pak, no extracted art, no decoded text; the rendering goldens are
 frame *hashes*, never pixels. The screenshots above are hardware captures of
-the running device, the same standard as the EBOOT's XMB art.
+the running device, the same standard as the EBOOT's XMB background.
 
 ## How it works
 
@@ -247,8 +257,9 @@ bun ipodtouch4 capture
 
 The iPod uses PocketJS's MobileInstallation helper and AppSync Unified to
 install a removable User app. Updates preserve its data container, and every
-installed file is checked against the build receipt. Pocket Voxel's opaque
-icon receives SpringBoard's native mask and shadow. Build artifacts and device
+installed file is checked against the build receipt. Its icon is the opaque
+Pocket3D app icon, copied into the bundle as `Icon.png` and `Icon@2x.png`;
+SpringBoard applies its native mask and shadow. Build artifacts and device
 receipts are under `dist/ipodtouch4`. If iOS 6 retains an old icon after an
 update, reboot the device once to reload SpringBoard's in-memory icon cache.
 Runtime and audio receipts live inside the app's own container. Both targets

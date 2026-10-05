@@ -26,6 +26,10 @@ The Rust nightly comes from the vendored Vita host's own
 `rust-toolchain.toml` — one pinned source both this VPK and PocketJS build
 against, so they cannot drift into two nightlies.
 
+The bubble icon is the Pocket3D app icon: `tools/voxel.ts` passes
+`vendor/pocketjs/engine/pocket3d/icon/vita/icon0.png` to `packageVitaVpk` as
+`icon`, which replaces `sce_sys/icon0.png` in the VPK.
+
 ## Install: one file
 
 **The VPK carries the pak inside it** (read from `app0:` at runtime) and

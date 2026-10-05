@@ -5,6 +5,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { POCKET3D_ICON } from "../../vendor/pocketjs/tools/pocket3d-icon.ts";
 import init, {
   build_psp_install_zip,
   build_vita_vpk,
@@ -17,10 +18,13 @@ await init({ module_or_path: wasm });
 
 const pak = bytes("dist/voxelmon/voxelmon.vxpak");
 const notices = bytes("web/platform/THIRD_PARTY_NOTICES.txt");
+// Both icons are the Pocket3D app icon, the files the web build serves.
+const pspIcon = new Uint8Array(readFileSync(POCKET3D_ICON.psp));
+const vitaIcon = new Uint8Array(readFileSync(POCKET3D_ICON.vita));
 const startedPsp = performance.now();
 const psp = build_psp_install_zip(
   bytes("web/platform/psp/pocketvoxel-psp.prx"),
-  bytes("web/platform/psp/ICON0.png"),
+  pspIcon,
   bytes("web/platform/psp/PIC1.png"),
   notices,
   pak,
@@ -31,7 +35,7 @@ const startedVita = performance.now();
 const vita = build_vita_vpk(
   bytes("web/platform/vita/eboot.bin"),
   bytes("web/platform/vita/sce_sys/param.sfo"),
-  bytes("web/platform/vita/sce_sys/icon0.png"),
+  vitaIcon,
   bytes("web/platform/vita/sce_sys/livearea/contents/bg.png"),
   bytes("web/platform/vita/sce_sys/livearea/contents/startup.png"),
   bytes("web/platform/vita/sce_sys/livearea/contents/template.xml"),
@@ -113,6 +117,9 @@ try {
   if (!extract(vitaPath, "eboot.bin").equals(Buffer.from(bytes("web/platform/vita/eboot.bin")))) {
     throw new Error("Vita eboot template changed");
   }
+  if (!extract(vitaPath, "sce_sys/icon0.png").equals(Buffer.from(vitaIcon))) {
+    throw new Error("Vita bubble icon is not the Pocket3D icon");
+  }
 
   const pbp = extract(pspPath, expectedPsp[0]!);
   if (!pbp.subarray(0, 4).equals(Buffer.from([0, 0x50, 0x42, 0x50]))) {
@@ -127,6 +134,10 @@ try {
   if (!pbp.includes(Buffer.from("MEMSIZE\0")) || !pbp.includes(Buffer.from("PVXL00001\0"))) {
     throw new Error("PSP PARAM.SFO is missing its memory/title contract");
   }
+  // The second PBP entry is ICON0.PNG.
+  if (!pbp.subarray(pbp.readUInt32LE(12), pbp.readUInt32LE(16)).equals(Buffer.from(pspIcon))) {
+    throw new Error("PSP ICON0 is not the Pocket3D icon");
+  }
 
   const packPbp = Bun.which("pack-pbp");
   if (packPbp) {
@@ -138,7 +149,7 @@ try {
       packPbp,
       nativePbp,
       sfoPath,
-      join(root, "web/platform/psp/ICON0.png"),
+      POCKET3D_ICON.psp,
       "NULL",
       "NULL",
       join(root, "web/platform/psp/PIC1.png"),

@@ -4,6 +4,8 @@ import { cpSync, mkdirSync, readdirSync, rmSync, statSync } from "node:fs";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { copyPlatformIcons } from "./platform-icons.ts";
+
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const web = join(root, "web");
 const out = join(root, "dist/web");
@@ -57,6 +59,9 @@ for (const name of [
 for (const name of ["manifest.json", "README.md", "THIRD_PARTY_NOTICES.txt", "psp", "vita"]) {
   cpSync(join(web, "platform", name), join(out, "platform", name), { recursive: true });
 }
+// The two console icons are the Pocket3D app icon, copied from the PocketJS
+// checkout to the paths the manifest pins (web/scripts/platform-icons.ts).
+copyPlatformIcons(join(out, "platform"));
 cpSync(
   join(web, "reference", "gen1recomp-LICENSE.md"),
   join(out, "third-party", "gen1recomp-LICENSE.md"),
