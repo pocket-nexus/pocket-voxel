@@ -62,6 +62,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
+name = "pocket3d-title"
+version = "0.1.0"
+dependencies = [
+ "vitasdk-sys",
+]
+
+[[package]]
 name = "pocketjs-core"
 version = "0.1.0"
 dependencies = [
@@ -98,6 +105,7 @@ name = "pocketvoxel-vita"
 version = "0.1.0"
 dependencies = [
  "libquickjs-sys",
+ "pocket3d-title",
  "pocketjs-core",
  "pocketjs-vita",
  "pocketvoxel-core",

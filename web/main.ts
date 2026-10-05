@@ -1,3 +1,4 @@
+import { playTitle } from "../vendor/pocketjs/engine/pocket3d/crates/pocket3d-title/web/pocket3d-title.js";
 import { RED_ROM_BYTES } from "../voxelmon/import/constants.ts";
 import { BrowserAudio } from "./audio.ts";
 import type { ExportRequest, ExportWorkerMessage, NativeTarget } from "./export-protocol.ts";
@@ -668,6 +669,8 @@ async function boot(bootJob: number, pak: ArrayBuffer, gameJson: ArrayBuffer): P
   try {
     const activeStage = await stageReady;
     if (!activeStage) throw stageFailure ?? new Error("The 3D Game Boy could not be loaded.");
+    // The Pocket3D title card covers the page while the runtime is created.
+    const title = playTitle();
     created = await WebRuntime.create({
       canvas: framebuffer,
       pak,
@@ -687,6 +690,8 @@ async function boot(bootJob: number, pak: ArrayBuffer, gameJson: ArrayBuffer): P
         if (bootJob === jobId) showWebError(error.message);
       },
     });
+    // The game reads input and starts its clock when the card has ended.
+    await title;
     if (bootJob !== jobId || selectedMode() !== "web") {
       created.dispose();
       webBuilding = false;

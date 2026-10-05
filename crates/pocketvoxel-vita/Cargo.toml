@@ -51,6 +51,9 @@ pocketjs-core = { path = "../../vendor/pocketjs/engine/core" }
 pocketjs-vita = { path = "../../vendor/pocketjs/hosts/vita", default-features = false }
 pocketvoxel-core = { path = "../pocketvoxel-core" }
 pocketvoxel-gxm = { path = "../pocketvoxel-gxm" }
+# The Pocket3D title card, drawn by the CPU into the display's frame buffer
+# before vita2d starts GXM (main.rs `run`).
+pocket3d-title = { path = "../../vendor/pocketjs/engine/pocket3d/crates/pocket3d-title" }
 # vita2d owns process-level GXM: the context, the shader patcher, the render
 # target, the shared depth buffer, the per-frame GPU pool and the swap. The
 # backend composes inside its scene.

@@ -35,6 +35,10 @@ pocketjs-psp = { path = "../../vendor/pocketjs/hosts/psp" }
 pocketjs-core = { path = "../../vendor/pocketjs/engine/core" }
 pocketvoxel-core = { path = "../pocketvoxel-core", default-features = false, features = ["libm"] }
 pocketvoxel-gu = { path = "../pocketvoxel-gu" }
+# The Pocket3D title card, drawn by the CPU into video memory before the GE
+# is set up (main.rs `title`). The crate has no PSP SDK dependency; the two
+# display calls come from the `psp` crate pinned above.
+pocket3d-title = { path = "../../vendor/pocketjs/engine/pocket3d/crates/pocket3d-title" }
 
 [features]
 # Frame-dump build for tests/e2e/voxel-ppsspp.ts: replays the baked per-tick

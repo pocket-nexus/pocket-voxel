@@ -31,6 +31,17 @@ every rule on it has a story behind it (usually in [VOXEL.md](/VOXEL)).
 6. **The surface changes by ceremony.** Edit `contracts/spec/voxel-spec.ts`,
    regenerate the Rust (`gen-voxel-rust.ts`), commit both — the byte-compare
    drift guard fails the build otherwise.
+7. **The Pocket3D title card plays first at every launch** on the PS Vita,
+   the PSP and the Web Player. It comes from PocketJS
+   (`vendor/pocketjs/engine/pocket3d/crates/pocket3d-title`): do not skip,
+   shorten, recolour or redraw it here, and do not draw the mark with the
+   game's own renderer. The call sites are `pocket3d_title::vita::play()` in
+   `crates/pocketvoxel-vita/src/main.rs` (before `vita2d_init_advanced`
+   starts GXM), `title()` in `crates/pocketvoxel-psp/src/main.rs` (in
+   `psp_main`, before the debug screen or the GE draw) and `playTitle()` in
+   `web/main.ts` (`boot`, awaited before the game reads input or starts its
+   clock). The one skip is the PSP `capture` and `autopilot` features,
+   which never ship.
 
 ## Before you push
 
