@@ -6,6 +6,7 @@ import { FixedClock } from "../web/clock.ts";
 import { InputMux, standardGamepadMask } from "../web/input.ts";
 import { isWrongRomError, progressFraction } from "../web/protocol.ts";
 import { redirectToHttps } from "../web/https.ts";
+import { PLATFORM_ICONS, platformSource } from "../web/scripts/platform-icons.ts";
 
 type GlbJson = {
   scenes?: { extras?: Record<string, unknown> }[];
@@ -654,7 +655,8 @@ describe("Pocket Voxel web pipeline UX", () => {
     for (const entry of [...manifest.psp.files, ...manifest.vita.files]) {
       expect(entry.path).not.toMatch(/(^|\/)\.\.?(\/|$)|\\/);
       expect(entry.path).not.toMatch(/\.(?:gb|gbc|vxpak)$/i);
-      const file = Bun.file(join("web", "platform", entry.path));
+      // The two icons are served from the PocketJS checkout; the manifest pins them.
+      const file = Bun.file(platformSource(join("web", "platform"), entry.path));
       expect(await file.exists()).toBe(true);
       const bytes = new Uint8Array(await file.arrayBuffer());
       expect(bytes.byteLength).toBe(entry.bytes);
@@ -687,8 +689,12 @@ describe("Pocket Voxel web pipeline UX", () => {
       expect(host.includes(Buffer.from("thread-cone"))).toBe(false);
       expect(host.includes(Buffer.from("/source/pocket-voxel"))).toBe(true);
     }
+    expect(
+      [...manifest.psp.files, ...manifest.vita.files]
+        .filter(({ id }) => id === "icon0")
+        .map(({ path }) => path),
+    ).toEqual(Object.keys(PLATFORM_ICONS));
     const artwork = [
-      await Bun.file("web/platform/source/icon.svg").text(),
       await Bun.file("web/platform/source/banner.svg").text(),
       await Bun.file("web/platform/source/startup.svg").text(),
     ].join("\n").toLowerCase();

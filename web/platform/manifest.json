@@ -15,8 +15,8 @@
       {
         "id": "icon0",
         "path": "psp/ICON0.png",
-        "bytes": 1932,
-        "sha256": "797dbf858835de8984668907d090511da378546eaad58f6c6779667870c242b9"
+        "bytes": 4070,
+        "sha256": "fac61f5ce47795db6a56187aba57158e80212ff4a4500f67e9fe761ab84116c8"
       },
       {
         "id": "pic1",
@@ -51,8 +51,8 @@
       {
         "id": "icon0",
         "path": "vita/sce_sys/icon0.png",
-        "bytes": 828,
-        "sha256": "1e4fe0ef8a707ee80a4deea5542f7d20c023d4d2560120894f2eb46e938ba8db"
+        "bytes": 2958,
+        "sha256": "96bda9aa53cc823f1faca5607b1252e3a5b24c4de799f2bca8ea79a4ed08bea0"
       },
       {
         "id": "background",

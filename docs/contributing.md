@@ -42,6 +42,23 @@ every rule on it has a story behind it (usually in [VOXEL.md](/VOXEL)).
    `web/main.ts` (`boot`, awaited before the game reads input or starts its
    clock). The one skip is the PSP `capture` and `autopilot` features,
    which never ship.
+8. **The app icon is the Pocket3D app icon**, read from the PocketJS
+   checkout's `vendor/pocketjs/engine/pocket3d/icon/`. This repository draws
+   no icon and tracks no copy of one: do not add an `ICON0.PNG`, `icon0.png`,
+   `icon.png` or `Icon.png`, and do not resize, recolour or crop the PocketJS
+   files. The consumers are `xmb_icon_png` in
+   `crates/pocketvoxel-psp/Psp.toml` and the `pack-pbp` repack in
+   `tools/voxel.ts` (`psp/ICON0.PNG`), `icon` on `packageVitaVpk` in
+   `tools/voxel.ts` (`vita/icon0.png`), `web/scripts/platform-icons.ts` (the
+   web build copies both files to the paths `web/platform/manifest.json`
+   pins) and `bakeArtwork` in `tools/iphone4s.ts` for the iPod touch 4
+   (`ios/Icon.png`, `ios/Icon@2x.png`). A new console target takes its icon
+   the same way. The rule covers the icon only: `PIC1.png` and the LiveArea
+   `bg.png` / `startup.png` are not PocketJS icon files. The procedure is
+   `vendor/pocketjs/skills/pocket3d-brand/SKILL.md`;
+   `tests/pocket3d-icon.test.ts` holds the wiring. After a PocketJS pin that
+   changes an icon, update `bytes` and `sha256` of the two `icon0` entries in
+   `web/platform/manifest.json`: the web build prints the values it needs.
 
 ## Before you push
 

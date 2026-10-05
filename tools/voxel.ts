@@ -19,6 +19,7 @@ import {
   rmSync,
 } from "node:fs";
 
+import { POCKET3D_ICON } from "../vendor/pocketjs/tools/pocket3d-icon.ts";
 import { packageVitaVpk } from "../vendor/pocketjs/tools/vita-package.ts";
 import { missingInputReason, resolveEnv } from "../voxelmon/import/env.ts";
 import { runImport } from "../voxelmon/import/index.ts";
@@ -286,7 +287,9 @@ async function buildEboot(cargoArgs: string[]): Promise<number> {
   );
   // The XMB cover art rides through this repack too — passing NULL for the
   // icon slots (as the first version did) silently dropped what cargo-psp
-  // had just packed, leaving a blank tile on the console.
+  // had just packed, leaving a blank tile on the console. ICON0 is the
+  // Pocket3D app icon from the PocketJS checkout, the file Psp.toml names;
+  // PIC1 is the game's own picture.
   const asset = (name: string) => {
     const p = `${ebootDir}/assets/${name}`;
     return existsSync(p) ? p : "NULL";
@@ -296,7 +299,7 @@ async function buildEboot(cargoArgs: string[]): Promise<number> {
       "pack-pbp",
       `${outDir}/EBOOT.PBP`,
       sfo,
-      asset("ICON0.png"),
+      POCKET3D_ICON.psp,
       "NULL", // ICON1.PMF (animated icon)
       "NULL", // PIC0.PNG
       asset("PIC1.png"),
@@ -414,6 +417,8 @@ async function buildVpk(cargoArgs: string[], tier: string): Promise<number> {
     await Bun.write(`${staged}/voxelmon.vxpak`, Bun.file(pakSource));
   }
 
+  // The bubble icon is the Pocket3D app icon: `icon` replaces
+  // sce_sys/icon0.png, whatever the framework defaults or the staged tree hold.
   const vpk = `${ROOT}dist/voxelmon/voxelmon.vpk`;
   await packageVitaVpk({
     tool: `${vitasdk}/bin/vita-pack-vpk`,
@@ -421,6 +426,7 @@ async function buildVpk(cargoArgs: string[], tier: string): Promise<number> {
     eboot,
     output: vpk,
     applicationAssets: staged,
+    icon: POCKET3D_ICON.vita,
   });
   console.log(`voxel vita: ${vpk}`);
   console.log(

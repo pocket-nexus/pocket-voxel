@@ -27,7 +27,9 @@ What one build actually does:
    for it, and without that flag a PSP grants only the 24 MB user partition —
    which the pak plus the QuickJS heap cannot share. The tool writes the
    PARAM.SFO itself (same layout, plus the one dword) and re-packs with the
-   XMB cover art preserved.
+   same XMB art `Psp.toml` names: `ICON0.PNG` is the Pocket3D app icon from
+   `vendor/pocketjs/engine/pocket3d/icon/psp/`, and `PIC1.png` is the game's
+   own picture in `crates/pocketvoxel-psp/assets/`.
 5. **Copy the pak next to the EBOOT** — PPSSPP maps the EBOOT's directory as
    `host0:`, so the emulator finds it with zero configuration.
 

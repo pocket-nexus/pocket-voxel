@@ -14,6 +14,12 @@ these validated templates.
 - Both downloads carry the same hash-pinned `THIRD_PARTY_NOTICES.txt` beside
   their runtime files, including the native hosts' complete license terms.
 
+The console icon of both downloads is the Pocket3D app icon. `psp/ICON0.png`
+and `vita/sce_sys/icon0.png` are not kept in this directory: the web build
+(`web/scripts/platform-icons.ts`) copies them from
+`vendor/pocketjs/engine/pocket3d/icon/` into `dist/web/platform/`, and
+`manifest.json` pins their size and SHA-256.
+
 The original artwork in `source/` is Pocket Voxel project artwork and contains
 no ROM-derived pixels. Binary hashes, the source revision, guest bundle hash,
 and package compatibility are pinned in `manifest.json`.
