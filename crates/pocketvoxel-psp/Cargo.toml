@@ -26,8 +26,8 @@ edition = "2021"
 license = "MIT"
 
 [dependencies]
-psp = { git = "https://github.com/pocket-stack/rust-psp.git", rev = "2cbaf8c9bc72569c76240a1d9743de10731e5f6b", features = ["external-c-heap", "abort-only", "external-global-alloc"] }
-libquickjs-sys = { git = "https://github.com/pocket-stack/quickjs-rs.git", rev = "ba5bdd0dc013518768e76cd9e05cd30ed53dd35b" }
+psp = { git = "https://github.com/pocket-nexus/rust-psp.git", rev = "2cbaf8c9bc72569c76240a1d9743de10731e5f6b", features = ["external-c-heap", "abort-only", "external-global-alloc"] }
+libquickjs-sys = { git = "https://github.com/pocket-nexus/quickjs-rs.git", rev = "ba5bdd0dc013518768e76cd9e05cd30ed53dd35b" }
 pocketjs-psp = { path = "../../vendor/pocketjs/hosts/psp" }
 # For the audio module's own constants (spec::audio, generated from
 # contracts/spec/audio.ts): the frame loop's PCM pump mirrors the ring's
@@ -35,6 +35,10 @@ pocketjs-psp = { path = "../../vendor/pocketjs/hosts/psp" }
 pocketjs-core = { path = "../../vendor/pocketjs/engine/core" }
 pocketvoxel-core = { path = "../pocketvoxel-core", default-features = false, features = ["libm"] }
 pocketvoxel-gu = { path = "../pocketvoxel-gu" }
+# The Pocket3D title card, drawn by the CPU into video memory before the GE
+# is set up (main.rs `title`). The crate has no PSP SDK dependency; the two
+# display calls come from the `psp` crate pinned above.
+pocket3d-title = { path = "../../vendor/pocketjs/engine/pocket3d/crates/pocket3d-title" }
 
 [features]
 # Frame-dump build for tests/e2e/voxel-ppsspp.ts: replays the baked per-tick

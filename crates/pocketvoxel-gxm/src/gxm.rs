@@ -4,13 +4,13 @@
 //! GXM is shader-only — there is no fixed-function pipe in the hardware — so
 //! every draw needs a compiled vertex/fragment program pair. Compiling on the
 //! console means Sony's `libshacccg.suprx`; bringing programs that are
-//! already compiled means no prerequisite at all. The five `.gxp` binaries
-//! come from xerpi's MIT-licensed libvita2d and are reused from
-//! `pocket3d-vita/shaders/`, which records their extraction (see that
-//! directory's `README.md` and `LICENSE.libvita2d`). One copy in the tree,
-//! one provenance record.
+//! already compiled means no prerequisite at all. The `.gxp` binaries come
+//! from xerpi's MIT-licensed libvita2d. The four this backend binds live in
+//! this crate's `shaders/`, which records their extraction (see that
+//! directory's `README.md` and `LICENSE.libvita2d`); PocketJS kept them
+//! under `pocket3d-vita/shaders/` until that crate moved to OpenStrike.
 //!
-//! What those five shaders are:
+//! What libvita2d's five shaders are (`texture_tint_f` is not bound here):
 //!
 //! ```text
 //! color_v    aPosition, aColor  + uniform wvp -> per-vertex colour
@@ -54,18 +54,18 @@ use pocketvoxel_core::spec::VERTEX_STRIDE;
 #[repr(C, align(16))]
 struct AlignedShader<const N: usize>([u8; N]);
 
-const SHADERS: &str = "../../../vendor/pocketjs/engine/pocket3d/crates/pocket3d-vita/shaders";
+const SHADERS: &str = "../shaders";
 static COLOR_V: AlignedShader<344> = AlignedShader(*include_bytes!(concat!(
-    "../../../vendor/pocketjs/engine/pocket3d/crates/pocket3d-vita/shaders/color_v.gxp"
+    "../shaders/color_v.gxp"
 )));
 static COLOR_F: AlignedShader<216> = AlignedShader(*include_bytes!(concat!(
-    "../../../vendor/pocketjs/engine/pocket3d/crates/pocket3d-vita/shaders/color_f.gxp"
+    "../shaders/color_f.gxp"
 )));
 static TEXTURE_V: AlignedShader<344> = AlignedShader(*include_bytes!(concat!(
-    "../../../vendor/pocketjs/engine/pocket3d/crates/pocket3d-vita/shaders/texture_v.gxp"
+    "../shaders/texture_v.gxp"
 )));
 static TEXTURE_F: AlignedShader<228> = AlignedShader(*include_bytes!(concat!(
-    "../../../vendor/pocketjs/engine/pocket3d/crates/pocket3d-vita/shaders/texture_f.gxp"
+    "../shaders/texture_f.gxp"
 )));
 
 // ---------------------------------------------------------------------------

@@ -33,6 +33,12 @@ overlay, and the chip synth that renders the ROM's own sound programs to PCM.
 Steady-state boundary traffic is a few ops per tick against a measured QuickJS
 budget of ~8k ops per frame.
 
+Pocket Voxel is built on [Pocket3D](https://3d.pocket.nexus) and shows the
+Pocket3D title card at launch: **on the PS Vita and the PSP before the
+renderer starts, and in the Web Player before the game starts**. The card is
+PocketJS's `pocket3d-title`, 144 ticks at 60 Hz. The iPhone 4S / iPod touch 4
+and Cardputer Zero hosts have no drawer for it and do not show it yet.
+
 ## You bring the ROM
 
 This repository is **ROM-fed, exactly like upstream gen1recomp**: the only
@@ -307,3 +313,10 @@ engine commit — a mainline commit, moved forward deliberately.
 ## License
 
 MIT. The ROM, and everything derived from it, stays yours and stays local.
+
+The vendored Pocket3D (`vendor/pocketjs/pocket3d/`, `devices/` and
+`engine/pocket3d/`) is under the
+[Pocket3D License](https://github.com/pocket-nexus/pocketjs/blob/main/pocket3d/LICENSE):
+MIT's grant plus one condition, that a distributed product drawing 3D scenes
+with Pocket3D shows the title card each time it starts. The rest of
+`vendor/pocketjs` is MIT.

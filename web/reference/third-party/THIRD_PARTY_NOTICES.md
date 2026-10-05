@@ -13,6 +13,7 @@ Versions are pinned by `bun.lock` and `Cargo.lock`.
 | [miniz_oxide](https://github.com/Frommi/miniz_oxide) | 0.8.9 | miniz_oxide contributors | [MIT](./miniz_oxide-LICENSE-MIT.md) |
 | [adler2](https://github.com/oyvindln/adler2) | 2.0.1 | adler2 contributors | [MIT](./adler2-LICENSE-MIT.txt) |
 | [unicode-ident](https://github.com/dtolnay/unicode-ident) | 1.0.24 | David Tolnay and Unicode, Inc. | [MIT](./unicode-ident-LICENSE-MIT.txt) and [Unicode-3.0](./unicode-ident-LICENSE-UNICODE.txt) |
+| [Pocket3D](https://3d.pocket.nexus) title card (`pocket3d-title`) | PocketJS `19d15a07` | Copyright © 2026 Yifeng "Evan" Wang | [Pocket3D License 1.0](./pocket3d-LICENSE.txt) |
 
 The optional PSP and PS Vita downloads are assembled from ROM-independent
 native host templates built from this repository. Their principal embedded

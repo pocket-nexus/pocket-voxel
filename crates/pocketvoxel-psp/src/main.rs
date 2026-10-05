@@ -153,8 +153,42 @@ static mut LAST_GC_BUMP: usize = 0;
 fn psp_main() {
     unsafe {
         host::reset_fpu_status();
+        // First picture of every launch: both launch paths (the worker thread
+        // and its fallback) start below this line, and nothing has printed to
+        // the debug screen or set up the GE yet. A capture or autopilot build
+        // skips the card — neither leaves the developer's machine, and both
+        // must stay a pure function of the tick index.
+        #[cfg(not(any(feature = "capture", feature = "autopilot")))]
+        title();
         host::run_on_worker(worker_main, run);
     }
+}
+
+/// The Pocket3D title card, drawn by the CPU into video memory before the GE
+/// is set up. `pocket3d-title` has no PSP SDK dependency, so the display
+/// calls are this crate's.
+#[cfg(not(any(feature = "capture", feature = "autopilot")))]
+unsafe fn title() {
+    use pocket3d_title::{Layout, Surface};
+    use psp::sys::{DisplayMode, DisplayPixelFormat, DisplaySetBufSync};
+
+    // Full clocks for the card too: a launch starts at 222 MHz, and every
+    // fading frame is a full-screen CPU fill (`run` sets them again).
+    sys::scePowerSetClockFrequency(333, 333, 166);
+    // the uncached mirror of video memory: what is written is what the display reads
+    let vram = (sys::sceGeEdramGetAddr() as usize | 0x4000_0000) as *mut u8;
+    sys::sceDisplaySetMode(DisplayMode::Lcd, 480, 272);
+    let mut surface = Surface {
+        pixels: core::slice::from_raw_parts_mut(vram, 512 * 272 * 4),
+        width: 480,
+        height: 272,
+        stride: 512,
+        layout: Layout::Rgba8,
+    };
+    pocket3d_title::play(&mut surface, |_| {
+        sys::sceDisplaySetFrameBuf(vram, 512, DisplayPixelFormat::Psm8888, DisplaySetBufSync::NextFrame);
+        sys::sceDisplayWaitVblankStart();
+    });
 }
 
 unsafe extern "C" fn worker_main(_argc: usize, _argv: *mut c_void) -> i32 {

@@ -289,6 +289,20 @@ describe("Pocket Voxel web pipeline UX", () => {
     expect(main).toContain('new URL("./export.worker.js"');
     expect(main).toContain("cooked.pak.slice(0)");
 
+    // The Pocket3D title card plays first at every Web Player launch: it
+    // starts before the runtime is created and has ended before the game
+    // reads input or starts its clock.
+    const boot = main.slice(
+      main.indexOf("async function boot("),
+      main.indexOf("const stageReady:"),
+    );
+    expect(main).toContain("pocket3d-title/web/pocket3d-title.js");
+    expect(boot).toContain("const title = playTitle();");
+    expect(boot.indexOf("const title = playTitle();")).toBeLessThan(boot.indexOf("WebRuntime.create("));
+    expect(boot.indexOf("await title;")).toBeGreaterThan(boot.indexOf("WebRuntime.create("));
+    expect(boot.indexOf("await title;")).toBeLessThan(boot.indexOf("attachKeyboard("));
+    expect(boot.indexOf("await title;")).toBeLessThan(boot.indexOf("runtime.start()"));
+
     const syncTargetResult = main.slice(
       main.indexOf("function syncTargetResult("),
       main.indexOf("function resetRuntime("),
@@ -586,6 +600,7 @@ describe("Pocket Voxel web pipeline UX", () => {
       ["adler2", "adler2-LICENSE-MIT.txt"],
       ["unicode-ident", "unicode-ident-LICENSE-MIT.txt"],
       ["unicode-ident", "unicode-ident-LICENSE-UNICODE.txt"],
+      ["Pocket3D", "pocket3d-LICENSE.txt"],
       ["PocketJS", "pocketjs-LICENSE.txt"],
       ["QuickJS", "quickjs-LICENSE.txt"],
       ["rust-psp", "rust-psp-LICENSE.txt"],
@@ -596,6 +611,11 @@ describe("Pocket Voxel web pipeline UX", () => {
       expect(notices).toContain(license);
       expect(await Bun.file(join("web", "reference", "third-party", license)).exists()).toBe(true);
     }
+    // The Pocket3D License travels with the title card the Web Player bundles:
+    // the shipped copy is the pinned engine's own text.
+    expect(await Bun.file("web/reference/third-party/pocket3d-LICENSE.txt").text()).toBe(
+      await Bun.file("vendor/pocketjs/pocket3d/LICENSE").text(),
+    );
     const html = await Bun.file("web/index.html").text();
     expect(html).toContain("./third-party/runtime/THIRD_PARTY_NOTICES.md");
   });

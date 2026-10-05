@@ -276,6 +276,17 @@ unsafe fn run() {
         free.size_phycont / 1048576,
     ));
 
+    // ---- the Pocket3D title card ----
+    // First picture of every launch, and before `sceGxmInitialize` (inside
+    // `vita2d_init_advanced` below): the card shows its own frame buffer
+    // through the display, then clears it and frees the memory, so vita2d
+    // starts from the state it expects. No pad is read until it has ended.
+    if pocket3d_title::vita::play() {
+        trail("title: Pocket3D card shown");
+    } else {
+        trail("title: no video memory for the Pocket3D card");
+    }
+
     // vita2d's per-frame GPU pool, which every CPU-built pass stages through
     // (sky bands, decals, the ghost, cards, the GB UI layer, and a pulled
     // grass mesh — the largest single stage at tens of thousands of 16-byte
