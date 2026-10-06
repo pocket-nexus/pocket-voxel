@@ -21,10 +21,12 @@ an embedded QuickJS guest; the presentation is a Rust reimplementation of the
 diorama renderer. Both upstreams are MIT-licensed; both serve here as
 executable specifications, not vendored code.
 
+Pocket Voxel is one of the two mods on [Pocket Studio](https://studio.pocket.nexus/#games). The engines behind Pocket Studio also run mods. This one reads files from a game you own, so Pocket Studio shows it as a demo. The code is here: take it and make it yours.
+
 Pocket Voxel is a specialized runtime of
-[PocketJS](https://github.com/pocket-stack/pocketjs) — the same
+[PocketJS](https://github.com/pocket-nexus/pocketjs) — the same
 `⟨ core, surface, guest ⟩` composition as
-[OpenStrike](https://github.com/pocket-stack/open-strike), with the ownership
+[OpenStrike](https://github.com/pocket-nexus/open-strike), with the ownership
 split inverted: **the game state lives in the guest** (world, battle, script
 VM, menus, saves — every formula cites the Lua it ports), and the Rust core
 owns only the retained scene — cooked voxel chunks, entity billboards, camera
@@ -103,7 +105,7 @@ Needs [Bun](https://bun.sh) and a Rust toolchain. Device builds need one
 console toolchain each; both are covered under [Run it](#run-it).
 
 ```sh
-git clone --recursive https://github.com/pocket-stack/pocket-voxel
+git clone --recursive https://github.com/pocket-nexus/pocket-voxel
 cd pocket-voxel && bun install
 
 export VOXELMON_ROM=/path/to/your/rom.gb   # SHA-1 verified before any decode
