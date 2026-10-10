@@ -268,6 +268,29 @@ Runtime and audio receipts live inside the app's own container. Both targets
 share the ARMv7 renderer and support simultaneous D-pad and A/B contacts. `input_chord_frames` in the status receipt
 records frames that received a direction and A/B together.
 
+### Nintendo 3DS
+
+The native PICA200 backend renders the game on the **400×240 upper screen**,
+in a 400×226 band that preserves the cooked camera aspect. The **320×240 lower
+screen** displays a PocketJS placeholder and control hints. D-pad / Circle Pad,
+A/B, Start, and Select control the game; **L+R+START returns to HBL**.
+
+```sh
+bun run 3ds          # dist/3ds/voxelmon.3dsx
+bun run 3ds --cia    # also dist/3ds/voxelmon.cia
+```
+
+Use the same imported and cooked content as the other native targets. Copy the
+`.3dsx` to `/3ds/pocket-voxel/pocket-voxel.3dsx` on the SD card, or install the CIA. Each package
+embeds its game, VXPK, and icons. Build/runtime receipts keep the artifact,
+rendering, input, and NDSP audio evidence separate. The host uses the pinned
+PocketJS 3DS toolchain, 60 Hz game logic, and 11.025 kHz stereo output.
+
+Azahar covers story, battle, computer menus, and both screens. Physical-device
+acceptance is pending; New 3DS is the initial target and Old 3DS memory remains
+unverified. See [the 3DS host guide](hosts/3ds/README.md) for prerequisites,
+audio requirements, receipts, and reproducible validation.
+
 ### Cardputer Zero
 
 The native Cardputer Zero host targets its internal **320×170 RGB565** LCD

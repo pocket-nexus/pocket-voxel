@@ -1,0 +1,7 @@
+# FNV-1a64 over the decoded 400x240 RGBA of each battle mark, captured from dist/3ds/voxelmon-capture.3dsx
+# under Azahar 2125.1.2, graphics_api=0 (software). Determinism and regression only — parity with the
+# sim oracle is what tests/e2e/voxel-3ds.ts's mean and coarse-structure gates test.
+grass-edge a83f89fbf5605db7
+battle-intro 9f35d2e6b3d6a2db
+post-fight dd676d10f9d9ae6c
+escaped 27407f4f95882587

@@ -36,6 +36,7 @@ export default withMermaid({
           { text: "The Quality Ladder", link: "/guide/quality-ladder" },
           { text: "Running on PSP", link: "/guide/psp" },
           { text: "Running on PS Vita", link: "/guide/vita" },
+          { text: "Running on Nintendo 3DS", link: "/guide/3ds" },
           { text: "Testing & Determinism", link: "/guide/testing" },
         ],
       },
